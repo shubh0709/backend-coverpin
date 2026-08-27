@@ -1,0 +1,151 @@
+{
+  "info": {
+    "name": "CoverPin Backend",
+    "description": "Entities, filings (state machine), and AI compliance checklist endpoints. Import alongside the 'CoverPin Local' environment.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "{{baseUrl}}" },
+    { "key": "entityId", "value": "" },
+    { "key": "filingId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /api/health",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/health" }
+        }
+      ]
+    },
+    {
+      "name": "Entities",
+      "item": [
+        {
+          "name": "Create entity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  pm.collectionVariables.set('entityId', json.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/entities",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Test LLC\",\n  \"entityType\": \"LLC\",\n  \"jurisdiction\": \"US-DE\",\n  \"formationDate\": \"2022-01-15\",\n  \"registeredAgent\": \"Northwest Registered Agent\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List entities",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/entities" }
+        },
+        {
+          "name": "Get entity by id",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/entities/{{entityId}}" }
+        },
+        {
+          "name": "Update entity",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/entities/{{entityId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"ACTIVE\"\n}" }
+          }
+        },
+        {
+          "name": "Delete entity",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/api/entities/{{entityId}}" }
+        },
+        {
+          "name": "AI: generate compliance checklist",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/entities/{{entityId}}/compliance-checklist"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Filings",
+      "item": [
+        {
+          "name": "Create filing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  pm.collectionVariables.set('filingId', json.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/entities/{{entityId}}/filings",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filingType\": \"ANNUAL_REPORT\",\n  \"dueDate\": \"2026-12-31\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List filings for entity",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/entities/{{entityId}}/filings" }
+        },
+        {
+          "name": "Transition filing -> AI_PROCESSING",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/entities/{{entityId}}/filings/{{filingId}}/status",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"AI_PROCESSING\"\n}" }
+          }
+        },
+        {
+          "name": "Transition filing -> FILED",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/entities/{{entityId}}/filings/{{filingId}}/status",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"FILED\"\n}" }
+          }
+        },
+        {
+          "name": "Transition filing -> CONFIRMED",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/entities/{{entityId}}/filings/{{filingId}}/status",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"CONFIRMED\"\n}" }
+          }
+        },
+        {
+          "name": "Invalid transition (should 400)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/entities/{{entityId}}/filings/{{filingId}}/status",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"PENDING\"\n}" }
+          }
+        }
+      ]
+    }
+  ]
+}
