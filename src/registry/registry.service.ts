@@ -17,7 +17,7 @@ import {
   computeComplianceStatus,
   computeNextDueDate,
 } from './compliance/compliance.util';
-import { toDateOnlyString } from './validation/common';
+import { normalizeName, toDateOnlyString } from './validation/common';
 import { EntitiesQueryDto } from './dto/entities-query.dto';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 import { groupBy } from './util/group-by';
@@ -33,6 +33,12 @@ export interface ListChild {
   complianceStatus: string;
   nextDueDate: string | null;
   ownershipPct: number | null;
+  subsidiaryCount: number;
+  fqCount: number;
+  /** Subsidiaries can themselves have subsidiaries and FQs — expansion is
+   * recursive to arbitrary depth (the graph is guaranteed acyclic by
+   * validation, so this always terminates). FQs are terminal: always []. */
+  children: ListChild[];
 }
 
 @Injectable()
@@ -67,6 +73,7 @@ export class RegistryService {
         await entityRepo.upsert(
           {
             entityName: row.entityName,
+            entityNameKey: normalizeName(row.entityName),
             registrationType: row.registrationType,
             jurisdiction: row.jurisdiction,
             entityType: row.entityType as EntityTypeValue,
@@ -80,21 +87,26 @@ export class RegistryService {
             businessId: row.businessId,
             globalRegion: row.globalRegion as GlobalRegion | null,
           },
-          ['entityName'],
+          ['entityNameKey'],
         );
       }
 
       const allEntities = await entityRepo.find();
-      const idByName = new Map(allEntities.map((e) => [e.entityName, e.id]));
+      // Keyed by normalized name — Entity Name matching is trimmed and
+      // case-insensitive everywhere it's compared, including here where
+      // ownership/filings rows resolve which entity they refer to.
+      const idByName = new Map(
+        allEntities.map((e) => [normalizeName(e.entityName), e.id]),
+      );
 
       // Pass 2: now that every row in this batch has an id, wire up FQ -> domestic entity.
       for (const row of entityRows) {
         if (row.registrationType === 'FQ') {
           await entityRepo.update(
-            { entityName: row.entityName },
+            { entityNameKey: normalizeName(row.entityName) },
             {
               domesticEntityId: row.domesticEntity
-                ? (idByName.get(row.domesticEntity) ?? null)
+                ? (idByName.get(normalizeName(row.domesticEntity)) ?? null)
                 : null,
             },
           );
@@ -102,8 +114,8 @@ export class RegistryService {
       }
 
       for (const row of ownershipRows) {
-        const parentEntityId = idByName.get(row.parentEntity);
-        const childEntityId = idByName.get(row.childEntity);
+        const parentEntityId = idByName.get(normalizeName(row.parentEntity));
+        const childEntityId = idByName.get(normalizeName(row.childEntity));
         if (!parentEntityId || !childEntityId) continue;
         await edgeRepo.upsert(
           {
@@ -116,7 +128,7 @@ export class RegistryService {
       }
 
       for (const row of filingRows) {
-        const entityId = idByName.get(row.entityName);
+        const entityId = idByName.get(normalizeName(row.entityName));
         if (!entityId) continue;
         await filingRepo.upsert(
           {
@@ -179,10 +191,14 @@ export class RegistryService {
       (e) => e.registrationType === 'Entity' && !childEntityIds.has(e.id),
     );
 
-    let rows = topLevel.map((entity) => {
-      const { complianceStatus, nextDueDate } = statusFor(entity);
-
-      const fqs: ListChild[] = (fqsByDomesticId.get(entity.id) ?? []).map(
+    // Recursive: a subsidiary can itself have subsidiaries and FQs, expanded
+    // by expanding its own row in turn, to arbitrary depth. Cycles are
+    // rejected at validation time, so the graph is guaranteed acyclic and
+    // this always terminates. A child with more than one parent is walked
+    // — and appears — once per parent, never deduplicated to one "primary"
+    // owner.
+    const buildChildren = (parentId: string): ListChild[] => {
+      const fqs: ListChild[] = (fqsByDomesticId.get(parentId) ?? []).map(
         (fq) => {
           const fqStatus = statusFor(fq);
           return {
@@ -196,32 +212,43 @@ export class RegistryService {
             complianceStatus: fqStatus.complianceStatus,
             nextDueDate: fqStatus.nextDueDate,
             ownershipPct: null,
+            subsidiaryCount: 0,
+            fqCount: 0,
+            children: [],
           };
         },
       );
 
-      const subsidiaries: ListChild[] = (edgesByParent.get(entity.id) ?? [])
-        .map((edge) => entityById.get(edge.childEntityId))
-        .filter((child): child is EntityRecord => !!child)
-        .map((child) => {
-          const edge = (edgesByParent.get(entity.id) ?? []).find(
-            (e) => e.childEntityId === child.id,
-          )!;
+      const subsidiaries: ListChild[] = (edgesByParent.get(parentId) ?? [])
+        .map((edge) => ({ edge, child: entityById.get(edge.childEntityId) }))
+        .filter(
+          (x): x is { edge: (typeof x)['edge']; child: EntityRecord } =>
+            !!x.child,
+        )
+        .map(({ edge, child }) => {
           const childStatus = statusFor(child);
           return {
             id: child.id,
             entityName: child.entityName,
-            registrationType: 'Entity',
-            relation: 'subsidiary',
+            registrationType: 'Entity' as const,
+            relation: 'subsidiary' as const,
             jurisdiction: child.jurisdiction,
             entityType: child.entityType,
             entityStatus: child.entityStatus,
             complianceStatus: childStatus.complianceStatus,
             nextDueDate: childStatus.nextDueDate,
             ownershipPct: Number(edge.ownershipPct),
+            subsidiaryCount: (edgesByParent.get(child.id) ?? []).length,
+            fqCount: (fqsByDomesticId.get(child.id) ?? []).length,
+            children: buildChildren(child.id),
           };
         });
 
+      return [...fqs, ...subsidiaries];
+    };
+
+    let rows = topLevel.map((entity) => {
+      const { complianceStatus, nextDueDate } = statusFor(entity);
       return {
         id: entity.id,
         entityName: entity.entityName,
@@ -231,23 +258,42 @@ export class RegistryService {
         entityStatus: entity.entityStatus,
         complianceStatus,
         nextDueDate,
-        subsidiaryCount: subsidiaries.length,
-        fqCount: fqs.length,
-        children: [...fqs, ...subsidiaries],
+        subsidiaryCount: (edgesByParent.get(entity.id) ?? []).length,
+        fqCount: (fqsByDomesticId.get(entity.id) ?? []).length,
+        children: buildChildren(entity.id),
       };
     });
 
-    if (query.search) {
-      const term = query.search.trim().toLowerCase();
-      rows = rows.filter((r) => r.entityName.toLowerCase().includes(term));
-    }
-    if (query.entityStatus)
-      rows = rows.filter((r) => r.entityStatus === query.entityStatus);
-    if (query.complianceStatus)
-      rows = rows.filter((r) => r.complianceStatus === query.complianceStatus);
-    if (query.jurisdiction)
-      rows = rows.filter((r) => r.jurisdiction === query.jurisdiction);
+    // A branch stays visible under a filter if it, or any of its
+    // descendants at any depth, matches every active filter.
+    const term = query.search?.trim().toLowerCase();
+    const nodeMatches = (node: {
+      entityName: string;
+      entityStatus: string;
+      complianceStatus: string;
+      jurisdiction: string;
+    }): boolean => {
+      if (term && !node.entityName.toLowerCase().includes(term)) return false;
+      if (query.entityStatus && node.entityStatus !== query.entityStatus)
+        return false;
+      if (
+        query.complianceStatus &&
+        node.complianceStatus !== query.complianceStatus
+      )
+        return false;
+      if (query.jurisdiction && node.jurisdiction !== query.jurisdiction)
+        return false;
+      return true;
+    };
+    const subtreeMatches = (node: {
+      entityName: string;
+      entityStatus: string;
+      complianceStatus: string;
+      jurisdiction: string;
+      children: ListChild[];
+    }): boolean => nodeMatches(node) || node.children.some(subtreeMatches);
 
+    rows = rows.filter(subtreeMatches);
     rows.sort((a, b) => a.entityName.localeCompare(b.entityName));
 
     return { data: rows };
@@ -311,7 +357,9 @@ export class RegistryService {
       },
     );
 
-    // (c) subsidiary vs FQ count per top-level entity, including zero counts.
+    // (c) subsidiary vs FQ count per top-level entity — the full descendant
+    // set reachable anywhere in the tree, deduplicated by entity (a child
+    // reached via two different ownership paths counts once, not twice).
     const childEntityIds = new Set(edges.map((e) => e.childEntityId));
     const edgesByParent = groupBy(edges, (e) => e.parentEntityId);
     const fqsByDomesticId = groupBy(
@@ -321,13 +369,41 @@ export class RegistryService {
     const topLevel = filteredEntities.filter(
       (e) => e.registrationType === 'Entity' && !childEntityIds.has(e.id),
     );
-    const subsidiaryFqCountByTopLevel = topLevel.map((entity) => ({
-      entityName: entity.entityName,
-      subsidiaries: (edgesByParent.get(entity.id) ?? []).length,
-      fqs: (fqsByDomesticId.get(entity.id) ?? []).length,
-    }));
+    const collectDescendants = (rootId: string) => {
+      const subsidiaryIds = new Set<string>();
+      const fqIds = new Set<string>();
+      const stack = [rootId];
+      while (stack.length > 0) {
+        const current = stack.pop()!;
+        for (const fq of fqsByDomesticId.get(current) ?? []) {
+          fqIds.add(fq.id);
+        }
+        for (const edge of edgesByParent.get(current) ?? []) {
+          if (!subsidiaryIds.has(edge.childEntityId)) {
+            subsidiaryIds.add(edge.childEntityId);
+            stack.push(edge.childEntityId);
+          }
+        }
+      }
+      return { subsidiaryIds, fqIds };
+    };
+    const subsidiaryFqCountByTopLevel = topLevel.map((entity) => {
+      const { subsidiaryIds, fqIds } = collectDescendants(entity.id);
+      return {
+        entityName: entity.entityName,
+        subsidiaries: subsidiaryIds.size,
+        fqs: fqIds.size,
+      };
+    });
 
-    // (d) ownership % across a selected parent's children, with unallocated remainder.
+    // (d) ownership % across a selected parent's children, with unallocated
+    // remainder. Selecting a parent picks the *set* of children to display
+    // (its direct children only); for each child shown, the value plotted is
+    // that child's total ownership allocated across ALL of its parents (not
+    // just the selected one) — the same total the per-child ≤100%
+    // validation rule tracks — versus its own unallocated remainder. Each
+    // child gets its own two-segment bar since each child's total is an
+    // independent number, not a shared whole to stack together.
     const parentIds = new Set(edges.map((e) => e.parentEntityId));
     const parents = filteredEntities
       .filter((e) => parentIds.has(e.id))
@@ -342,8 +418,17 @@ export class RegistryService {
       selectedParentId = parents[0].id;
     }
 
-    let children: { entityName: string; pct: number }[] = [];
-    let unallocatedPct = 0;
+    const totalPctByChildId = new Map<string, number>();
+    for (const edge of edges) {
+      totalPctByChildId.set(
+        edge.childEntityId,
+        (totalPctByChildId.get(edge.childEntityId) ?? 0) +
+          Number(edge.ownershipPct),
+      );
+    }
+
+    let children: { entityName: string; pct: number; unallocatedPct: number }[] =
+      [];
     if (selectedParentId) {
       const parentEdges = (edgesByParent.get(selectedParentId) ?? []).filter(
         (edge) => {
@@ -356,12 +441,16 @@ export class RegistryService {
           return true;
         },
       );
-      children = parentEdges.map((edge) => ({
-        entityName: entityById.get(edge.childEntityId)!.entityName,
-        pct: Number(edge.ownershipPct),
-      }));
-      const allocated = children.reduce((sum, c) => sum + c.pct, 0);
-      unallocatedPct = Math.max(0, Math.round((100 - allocated) * 100) / 100);
+      children = parentEdges.map((edge) => {
+        const totalPct =
+          totalPctByChildId.get(edge.childEntityId) ??
+          Number(edge.ownershipPct);
+        return {
+          entityName: entityById.get(edge.childEntityId)!.entityName,
+          pct: totalPct,
+          unallocatedPct: Math.max(0, Math.round((100 - totalPct) * 100) / 100),
+        };
+      });
     }
 
     return {
@@ -372,7 +461,6 @@ export class RegistryService {
         parents,
         selectedParentId,
         children,
-        unallocatedPct,
       },
     };
   }

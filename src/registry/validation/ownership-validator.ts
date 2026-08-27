@@ -1,6 +1,6 @@
 import { ParsedSheet } from '../parsing/file-parser.service';
 import { ValidationError } from './types';
-import { isBlank, makeError } from './common';
+import { isBlank, makeError, normalizeName } from './common';
 import { checkHeaderSchema } from './schema-registry';
 
 const FILE = 'ownership.csv';
@@ -13,7 +13,11 @@ export interface ParsedOwnershipRow {
   ownershipPct: number;
 }
 
-/** entityTypeByName comes from the validated rows of entities.csv in the same upload. */
+/**
+ * entityTypeByName comes from the validated rows of entities.csv in the same
+ * upload, keyed by normalized (trimmed, lowercased) Entity Name — matching
+ * is case-insensitive everywhere Entity Name is compared.
+ */
 export function validateOwnershipSheet(
   sheet: ParsedSheet,
   entityTypeByName: Map<string, 'Entity' | 'FQ'>,
@@ -43,7 +47,7 @@ export function validateOwnershipSheet(
     if (isBlank(parentEntity)) {
       errors.push(err(row.line, 'Parent Entity', 'Parent Entity is required.'));
       hasError = true;
-    } else if (!entityTypeByName.has(parentEntity)) {
+    } else if (!entityTypeByName.has(normalizeName(parentEntity))) {
       errors.push(
         err(
           row.line,
@@ -52,7 +56,7 @@ export function validateOwnershipSheet(
         ),
       );
       hasError = true;
-    } else if (entityTypeByName.get(parentEntity) === 'FQ') {
+    } else if (entityTypeByName.get(normalizeName(parentEntity)) === 'FQ') {
       errors.push(
         err(
           row.line,
@@ -66,7 +70,7 @@ export function validateOwnershipSheet(
     if (isBlank(childEntity)) {
       errors.push(err(row.line, 'Child Entity', 'Child Entity is required.'));
       hasError = true;
-    } else if (!entityTypeByName.has(childEntity)) {
+    } else if (!entityTypeByName.has(normalizeName(childEntity))) {
       errors.push(
         err(
           row.line,
@@ -75,7 +79,7 @@ export function validateOwnershipSheet(
         ),
       );
       hasError = true;
-    } else if (entityTypeByName.get(childEntity) === 'FQ') {
+    } else if (entityTypeByName.get(normalizeName(childEntity)) === 'FQ') {
       errors.push(
         err(
           row.line,
@@ -89,7 +93,7 @@ export function validateOwnershipSheet(
     if (
       !isBlank(parentEntity) &&
       !isBlank(childEntity) &&
-      parentEntity === childEntity
+      normalizeName(parentEntity) === normalizeName(childEntity)
     ) {
       errors.push(
         err(
@@ -131,9 +135,9 @@ export function validateOwnershipSheet(
     if (
       !isBlank(parentEntity) &&
       !isBlank(childEntity) &&
-      parentEntity !== childEntity
+      normalizeName(parentEntity) !== normalizeName(childEntity)
     ) {
-      const key = `${parentEntity}|||${childEntity}`;
+      const key = `${normalizeName(parentEntity)}|||${normalizeName(childEntity)}`;
       const lines = seenPairs.get(key) ?? [];
       lines.push(row.line);
       seenPairs.set(key, lines);
@@ -148,15 +152,16 @@ export function validateOwnershipSheet(
     });
   }
 
-  for (const [key, lines] of seenPairs) {
+  const rowByLine = new Map(candidateRows.map((row) => [row.line, row]));
+  for (const lines of seenPairs.values()) {
     if (lines.length > 1) {
-      const [parent, child] = key.split('|||');
       for (const line of lines) {
+        const row = rowByLine.get(line)!;
         errors.push(
           err(
             line,
             'Parent Entity',
-            `Duplicate ownership row for ('${parent}' -> '${child}') — appears ${lines.length} times in this file.`,
+            `Duplicate ownership row for ('${row.parentEntity}' -> '${row.childEntity}', matching is case-insensitive) — appears ${lines.length} times in this file.`,
           ),
         );
       }

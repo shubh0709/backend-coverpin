@@ -29,16 +29,31 @@ async function bootstrap() {
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Entity Registry API')
     .setDescription(
-      'Upload entities/ownership/filings spreadsheets, browse the entity hierarchy, and pull compliance analytics.',
+      `Upload entities/ownership/filings spreadsheets, browse the entity hierarchy, and pull
+compliance analytics.
+
+**Typical client flow:** \`POST /upload\` your three files → \`GET /entities\` to browse the
+resulting hierarchy → \`GET /analytics\` for chart data. All endpoints are unauthenticated
+and return JSON; errors follow a single consistent shape (see \`ErrorResponseDto\` on any
+non-2xx response below).`,
     )
     .setVersion('1.0')
-    .addTag('upload')
-    .addTag('entities')
-    .addTag('analytics')
-    .addTag('health')
+    .addTag(
+      'upload',
+      'Batch-load entities/ownership/filings spreadsheets. All-or-nothing per call.',
+    )
+    .addTag('entities', 'Browse the uploaded entity hierarchy.')
+    .addTag('analytics', 'Aggregated/chart-ready views over the same data.')
+    .addTag('health', 'Liveness check.')
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api/docs', app, document);
+  SwaggerModule.setup('api/docs', app, document, {
+    swaggerOptions: {
+      persistAuthorization: true,
+      tagsSorter: 'alpha',
+      operationsSorter: 'alpha',
+    },
+  });
 
   const port = process.env.PORT ?? 4000;
   await app.listen(port);

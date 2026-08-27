@@ -6,6 +6,7 @@ import {
   isFutureDate,
   isValidJurisdictionFormat,
   makeError,
+  normalizeName,
   parseDate,
 } from './common';
 import { checkHeaderSchema } from './schema-registry';
@@ -23,10 +24,15 @@ export interface ParsedFilingRow {
   status: string;
 }
 
-/** entityNames comes from the validated rows of entities.csv in the same upload (Entity or FQ). */
+/**
+ * entityJurisdictionByName comes from the validated rows of entities.csv in
+ * the same upload (Entity or FQ), keyed by normalized (trimmed, lowercased)
+ * Entity Name, valued by that row's Jurisdiction — used both to check that
+ * Entity Name exists and that this filing's Jurisdiction matches it.
+ */
 export function validateFilingsSheet(
   sheet: ParsedSheet,
-  entityNames: Set<string>,
+  entityJurisdictionByName: Map<string, string>,
   today: Date,
 ): { errors: ValidationError[]; rows: ParsedFilingRow[] } {
   const errors: ValidationError[] = [];
@@ -55,18 +61,24 @@ export function validateFilingsSheet(
     const filedDateRaw = get(row.cells, 'Filed Date');
     const status = get(row.cells, 'Status');
 
+    let registeredJurisdiction: string | undefined;
     if (isBlank(entityName)) {
       errors.push(err(row.line, 'Entity Name', 'Entity Name is required.'));
       hasError = true;
-    } else if (!entityNames.has(entityName)) {
-      errors.push(
-        err(
-          row.line,
-          'Entity Name',
-          `Entity Name '${entityName}' does not match any row in entities.csv.`,
-        ),
+    } else {
+      registeredJurisdiction = entityJurisdictionByName.get(
+        normalizeName(entityName),
       );
-      hasError = true;
+      if (registeredJurisdiction === undefined) {
+        errors.push(
+          err(
+            row.line,
+            'Entity Name',
+            `Entity Name '${entityName}' does not match any row in entities.csv.`,
+          ),
+        );
+        hasError = true;
+      }
     }
 
     if (isBlank(filingType)) {
@@ -92,6 +104,18 @@ export function validateFilingsSheet(
           row.line,
           'Jurisdiction',
           `Jurisdiction must be 'Country' or 'Country/State' (e.g. 'United States/Delaware'), got '${jurisdiction}'.`,
+        ),
+      );
+      hasError = true;
+    } else if (
+      registeredJurisdiction !== undefined &&
+      jurisdiction !== registeredJurisdiction
+    ) {
+      errors.push(
+        err(
+          row.line,
+          'Jurisdiction',
+          `Jurisdiction '${jurisdiction}' does not match the Jurisdiction '${registeredJurisdiction}' registered for '${entityName}' in entities.csv.`,
         ),
       );
       hasError = true;
@@ -163,7 +187,7 @@ export function validateFilingsSheet(
     }
 
     if (!isBlank(entityName) && !isBlank(filingType) && dueDate) {
-      const key = `${entityName}|||${filingType}|||${dueDateRaw.trim()}`;
+      const key = `${normalizeName(entityName)}|||${filingType}|||${dueDateRaw.trim()}`;
       const lines = seenKeys.get(key) ?? [];
       lines.push(row.line);
       seenKeys.set(key, lines);
@@ -182,15 +206,16 @@ export function validateFilingsSheet(
     });
   }
 
-  for (const [key, lines] of seenKeys) {
+  const rowByLine = new Map(candidateRows.map((row) => [row.line, row]));
+  for (const lines of seenKeys.values()) {
     if (lines.length > 1) {
-      const [entityName, filingType] = key.split('|||');
       for (const line of lines) {
+        const row = rowByLine.get(line)!;
         errors.push(
           err(
             line,
             'Due Date',
-            `Duplicate filing row for ('${entityName}', '${filingType}', same Due Date) — appears ${lines.length} times in this file.`,
+            `Duplicate filing row for ('${row.entityName}', '${row.filingType}', same Due Date, matching is case-insensitive on Entity Name) — appears ${lines.length} times in this file.`,
           ),
         );
       }

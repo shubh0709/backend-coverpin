@@ -3,9 +3,13 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EntityRecord } from '../entities/entity.entity';
 import { OwnershipEdge } from '../entities/ownership-edge.entity';
-import { FileParserService } from '../parsing/file-parser.service';
+import {
+  FileParseError,
+  FileParserService,
+  ParsedSheet,
+} from '../parsing/file-parser.service';
 import { ValidationError } from './types';
-import { makeError } from './common';
+import { makeError, normalizeName } from './common';
 import { ParsedEntityRow, validateEntitiesSheet } from './entities-validator';
 import {
   ParsedOwnershipRow,
@@ -13,12 +17,12 @@ import {
 } from './ownership-validator';
 import { ParsedFilingRow, validateFilingsSheet } from './filings-validator';
 import { validateOwnershipGraph } from './graph-validator';
-import { SLOT_SCHEMAS } from './schema-registry';
+import { SLOT_SCHEMAS, UploadSlot } from './schema-registry';
 
 export interface UploadFiles {
-  entities: Express.Multer.File;
-  ownership: Express.Multer.File;
-  filings: Express.Multer.File;
+  entities?: Express.Multer.File;
+  ownership?: Express.Multer.File;
+  filings?: Express.Multer.File;
 }
 
 export interface ValidatedUpload {
@@ -46,26 +50,58 @@ export class ValidationService {
 
   async validateUpload(files: UploadFiles): Promise<ValidatedUpload> {
     const today = new Date();
+    const structuralErrors: ValidationError[] = [];
 
-    const entitiesSheet = this.parser.parse(files.entities);
-    const ownershipSheet = this.parser.parse(files.ownership);
-    const filingsSheet = this.parser.parse(files.filings);
+    const parseSlot = (
+      file: Express.Multer.File | undefined,
+      slot: UploadSlot,
+    ): ParsedSheet | null => {
+      const expected = SLOT_SCHEMAS[slot];
+      if (!file) {
+        structuralErrors.push(
+          makeError(
+            expected.file,
+            1,
+            'File',
+            'This file is required but was not uploaded.',
+          ),
+        );
+        return null;
+      }
+      try {
+        return this.parser.parse(file, expected.file);
+      } catch (e) {
+        if (e instanceof FileParseError) {
+          structuralErrors.push(e.validationError);
+          return null;
+        }
+        throw e;
+      }
+    };
 
-    const { errors: entityErrors, rows: entityRows } = validateEntitiesSheet(
-      entitiesSheet,
-      today,
-    );
+    const entitiesSheet = parseSlot(files.entities, 'entities');
+    const ownershipSheet = parseSlot(files.ownership, 'ownership');
+    const filingsSheet = parseSlot(files.filings, 'filings');
+
+    const { errors: entityErrors, rows: entityRows } = entitiesSheet
+      ? validateEntitiesSheet(entitiesSheet, today)
+      : { errors: [] as ValidationError[], rows: [] as ParsedEntityRow[] };
+
+    // Both keyed by normalized (trimmed, lowercased) Entity Name — matching
+    // is case-insensitive everywhere Entity Name is compared (§8).
     const entityTypeByName = new Map(
-      entityRows.map((r) => [r.entityName, r.registrationType]),
+      entityRows.map((r) => [normalizeName(r.entityName), r.registrationType]),
+    );
+    const entityJurisdictionByName = new Map(
+      entityRows.map((r) => [normalizeName(r.entityName), r.jurisdiction]),
     );
 
-    const { errors: ownershipErrors, rows: ownershipRows } =
-      validateOwnershipSheet(ownershipSheet, entityTypeByName);
-    const { errors: filingErrors, rows: filingRows } = validateFilingsSheet(
-      filingsSheet,
-      new Set(entityTypeByName.keys()),
-      today,
-    );
+    const { errors: ownershipErrors, rows: ownershipRows } = ownershipSheet
+      ? validateOwnershipSheet(ownershipSheet, entityTypeByName)
+      : { errors: [] as ValidationError[], rows: [] as ParsedOwnershipRow[] };
+    const { errors: filingErrors, rows: filingRows } = filingsSheet
+      ? validateFilingsSheet(filingsSheet, entityJurisdictionByName, today)
+      : { errors: [] as ValidationError[], rows: [] as ParsedFilingRow[] };
 
     const businessIdErrors =
       await this.validateBusinessIdsAgainstDb(entityRows);
@@ -74,6 +110,7 @@ export class ValidationService {
     const graphErrors = validateOwnershipGraph(ownershipRows, existingEdges);
 
     const errors = [
+      ...structuralErrors,
       ...entityErrors,
       ...businessIdErrors,
       ...ownershipErrors,
@@ -121,7 +158,7 @@ export class ValidationService {
     const errors: ValidationError[] = [];
     for (const row of candidates) {
       const owner = ownerNameByBusinessId.get(row.businessId);
-      if (owner && owner !== row.entityName) {
+      if (owner && normalizeName(owner) !== normalizeName(row.entityName)) {
         errors.push(
           makeError(
             'entities.csv',

@@ -58,6 +58,12 @@ export class EntityRecord {
   @Column({ name: 'entity_name', type: 'text', unique: true })
   entityName: string;
 
+  /** normalizeName(entityName) — trimmed + lowercased. Entity Name matching
+   * is case-insensitive everywhere it's compared, so natural-key upserts
+   * conflict-target this column rather than entity_name directly. */
+  @Column({ name: 'entity_name_key', type: 'text', unique: true })
+  entityNameKey: string;
+
   @Column({ name: 'registration_type', type: 'text' })
   registrationType: RegistrationType;
 

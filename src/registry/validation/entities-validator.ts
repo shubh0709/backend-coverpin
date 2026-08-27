@@ -12,6 +12,7 @@ import {
   isFutureDate,
   isValidJurisdictionFormat,
   makeError,
+  normalizeName,
   parseDate,
 } from './common';
 import { checkHeaderSchema } from './schema-registry';
@@ -223,22 +224,23 @@ export function validateEntitiesSheet(
     });
   }
 
-  // Entity Name must be unique within the sheet.
-  const linesByName = new Map<string, number[]>();
+  // Entity Name must be unique within the sheet (trimmed, case-insensitive).
+  const rowsByNormalizedName = new Map<string, ParsedEntityRow[]>();
   for (const row of candidateRows) {
     if (isBlank(row.entityName)) continue;
-    const lines = linesByName.get(row.entityName) ?? [];
-    lines.push(row.line);
-    linesByName.set(row.entityName, lines);
+    const key = normalizeName(row.entityName);
+    const rows = rowsByNormalizedName.get(key) ?? [];
+    rows.push(row);
+    rowsByNormalizedName.set(key, rows);
   }
-  for (const [name, lines] of linesByName) {
-    if (lines.length > 1) {
-      for (const line of lines) {
+  for (const rows of rowsByNormalizedName.values()) {
+    if (rows.length > 1) {
+      for (const row of rows) {
         errors.push(
           err(
-            line,
+            row.line,
             'Entity Name',
-            `Entity Name '${name}' appears ${lines.length} times in this file; it must be unique.`,
+            `Entity Name '${row.entityName}' appears ${rows.length} times in this file (matching is case-insensitive); it must be unique.`,
           ),
         );
       }
@@ -274,12 +276,12 @@ export function validateEntitiesSheet(
       !isBlank(row.entityName) &&
       (row.registrationType === 'Entity' || row.registrationType === 'FQ')
     ) {
-      typeByName.set(row.entityName, row.registrationType);
+      typeByName.set(normalizeName(row.entityName), row.registrationType);
     }
   }
   for (const row of candidateRows) {
     if (!row.domesticEntity) continue;
-    const refType = typeByName.get(row.domesticEntity);
+    const refType = typeByName.get(normalizeName(row.domesticEntity));
     if (refType === undefined) {
       errors.push(
         err(

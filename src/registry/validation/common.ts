@@ -13,6 +13,11 @@ export function isBlank(value: string): boolean {
   return value.trim() === '';
 }
 
+/** Entity Name matching is trimmed and case-insensitive everywhere it's compared. */
+export function normalizeName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const US_DATE = /^\d{1,2}\/\d{1,2}\/\d{4}$/;
 

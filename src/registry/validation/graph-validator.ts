@@ -1,6 +1,6 @@
 import { ParsedOwnershipRow } from './ownership-validator';
 import { ValidationError } from './types';
-import { makeError } from './common';
+import { makeError, normalizeName } from './common';
 
 const FILE = 'ownership.csv';
 
@@ -24,12 +24,21 @@ export function validateOwnershipGraph(
 ): ValidationError[] {
   const errors: ValidationError[] = [];
 
+  // Node identity in this graph is Entity Name matched case-insensitively
+  // (trimmed + lowercased) — the same normalized name from two differently
+  // cased rows must resolve to the same node.
   const merged = new Map<string, number>();
   for (const edge of existingEdges) {
-    merged.set(`${edge.parentName}|||${edge.childName}`, edge.pct);
+    merged.set(
+      `${normalizeName(edge.parentName)}|||${normalizeName(edge.childName)}`,
+      edge.pct,
+    );
   }
   for (const row of rows) {
-    merged.set(`${row.parentEntity}|||${row.childEntity}`, row.ownershipPct);
+    merged.set(
+      `${normalizeName(row.parentEntity)}|||${normalizeName(row.childEntity)}`,
+      row.ownershipPct,
+    );
   }
 
   const adjacency = new Map<string, string[]>();
@@ -45,8 +54,8 @@ export function validateOwnershipGraph(
   if (cyclicNodes.size > 0) {
     for (const row of rows) {
       if (
-        cyclicNodes.has(row.parentEntity) &&
-        cyclicNodes.has(row.childEntity)
+        cyclicNodes.has(normalizeName(row.parentEntity)) &&
+        cyclicNodes.has(normalizeName(row.childEntity))
       ) {
         errors.push(
           makeError(
@@ -66,7 +75,7 @@ export function validateOwnershipGraph(
     totalsByChild.set(child, (totalsByChild.get(child) ?? 0) + pct);
   }
   for (const row of rows) {
-    const total = totalsByChild.get(row.childEntity) ?? 0;
+    const total = totalsByChild.get(normalizeName(row.childEntity)) ?? 0;
     if (total > 100) {
       errors.push(
         makeError(
