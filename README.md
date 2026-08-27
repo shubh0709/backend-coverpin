@@ -77,6 +77,10 @@ three endpoints:
 - **`GET /api/analytics`** — the four chart datasets. Query params:
   `jurisdiction`, `entityStatus`, `parentEntityId`.
 
+Per-route internals (validation pipeline, compliance-status ladder, cycle
+detection, aggregation logic) with Mermaid flow diagrams: see
+[`docs/routes/`](docs/routes/README.md).
+
 ## Trying it against real data
 
 The repo root (one level up) has a clean, deliberately-valid sample dataset —
