@@ -1,13 +1,9 @@
 import { ParsedSheet } from '../parsing/file-parser.service';
 import { ValidationError } from './types';
-import { findMissingColumns, isBlank, makeError } from './common';
+import { isBlank, makeError } from './common';
+import { checkHeaderSchema } from './schema-registry';
 
 const FILE = 'ownership.csv';
-const REQUIRED_COLUMNS = [
-  'Parent Entity',
-  'Child Entity',
-  'Ownership %',
-] as const;
 const PCT_FORMAT = /^\d+(\.\d{1,2})?$/;
 
 export interface ParsedOwnershipRow {
@@ -27,12 +23,9 @@ export function validateOwnershipSheet(
     makeError(FILE, line, column, message);
 
   const colIndex = new Map(sheet.header.map((h, i) => [h, i]));
-  const missing = findMissingColumns(sheet.header, REQUIRED_COLUMNS);
-  if (missing.length > 0) {
-    for (const column of missing) {
-      errors.push(err(1, column, `Missing required column '${column}'.`));
-    }
-    return { errors, rows: [] };
+  const schemaErrors = checkHeaderSchema('ownership', sheet.header);
+  if (schemaErrors.length > 0) {
+    return { errors: schemaErrors, rows: [] };
   }
 
   const get = (cells: string[], column: string) =>

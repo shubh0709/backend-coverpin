@@ -13,6 +13,7 @@ import {
 } from './ownership-validator';
 import { ParsedFilingRow, validateFilingsSheet } from './filings-validator';
 import { validateOwnershipGraph } from './graph-validator';
+import { SLOT_SCHEMAS } from './schema-registry';
 
 export interface UploadFiles {
   entities: Express.Multer.File;
@@ -27,7 +28,11 @@ export interface ValidatedUpload {
   filingRows: ParsedFilingRow[];
 }
 
-const FILE_ORDER = ['entities.csv', 'ownership.csv', 'filings.csv'];
+const FILE_ORDER: string[] = [
+  SLOT_SCHEMAS.entities.file,
+  SLOT_SCHEMAS.ownership.file,
+  SLOT_SCHEMAS.filings.file,
+];
 
 @Injectable()
 export class ValidationService {

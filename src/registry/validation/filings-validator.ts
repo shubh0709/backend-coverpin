@@ -2,24 +2,15 @@ import { FILING_STATUSES, FILING_TYPES } from '../entities/filing.entity';
 import { ParsedSheet } from '../parsing/file-parser.service';
 import { ValidationError } from './types';
 import {
-  findMissingColumns,
   isBlank,
   isFutureDate,
   isValidJurisdictionFormat,
   makeError,
   parseDate,
 } from './common';
+import { checkHeaderSchema } from './schema-registry';
 
 const FILE = 'filings.csv';
-const REQUIRED_COLUMNS = [
-  'Entity Name',
-  'Filing Type',
-  'Jurisdiction',
-  'Filing Authority',
-  'Due Date',
-  'Filed Date',
-  'Status',
-] as const;
 
 export interface ParsedFilingRow {
   line: number;
@@ -43,12 +34,9 @@ export function validateFilingsSheet(
     makeError(FILE, line, column, message);
 
   const colIndex = new Map(sheet.header.map((h, i) => [h, i]));
-  const missing = findMissingColumns(sheet.header, REQUIRED_COLUMNS);
-  if (missing.length > 0) {
-    for (const column of missing) {
-      errors.push(err(1, column, `Missing required column '${column}'.`));
-    }
-    return { errors, rows: [] };
+  const schemaErrors = checkHeaderSchema('filings', sheet.header);
+  if (schemaErrors.length > 0) {
+    return { errors: schemaErrors, rows: [] };
   }
 
   const get = (cells: string[], column: string) =>

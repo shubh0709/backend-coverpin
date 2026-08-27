@@ -8,27 +8,15 @@ import {
 import { ParsedSheet } from '../parsing/file-parser.service';
 import { ValidationError } from './types';
 import {
-  findMissingColumns,
   isBlank,
   isFutureDate,
   isValidJurisdictionFormat,
   makeError,
   parseDate,
 } from './common';
+import { checkHeaderSchema } from './schema-registry';
 
 const FILE = 'entities.csv';
-const REQUIRED_COLUMNS = [
-  'Entity Name',
-  'Registration Type',
-  'Jurisdiction',
-  'Entity Type',
-  'Entity Status',
-  'Status Date',
-  'Domestic Entity',
-  'Formation Date',
-  'Entity/Business ID',
-  'Global Region',
-] as const;
 
 export interface ParsedEntityRow {
   line: number;
@@ -53,12 +41,9 @@ export function validateEntitiesSheet(
     makeError(FILE, line, column, message);
 
   const colIndex = new Map(sheet.header.map((h, i) => [h, i]));
-  const missing = findMissingColumns(sheet.header, REQUIRED_COLUMNS);
-  if (missing.length > 0) {
-    for (const column of missing) {
-      errors.push(err(1, column, `Missing required column '${column}'.`));
-    }
-    return { errors, rows: [] };
+  const schemaErrors = checkHeaderSchema('entities', sheet.header);
+  if (schemaErrors.length > 0) {
+    return { errors: schemaErrors, rows: [] };
   }
 
   const get = (cells: string[], column: string) =>
