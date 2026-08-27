@@ -3,6 +3,11 @@ import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RegistryService } from './registry.service';
 import { EntitiesQueryDto } from './dto/entities-query.dto';
 import { EntitiesListResponseDto } from './dto/entities-response.dto';
+import {
+  SuggestionsQueryDto,
+  SUGGESTIONS_DEFAULT_LIMIT,
+} from './dto/suggestions-query.dto';
+import { SuggestionsResponseDto } from './dto/suggestions-response.dto';
 
 @ApiTags('entities')
 @Controller('entities')
@@ -28,9 +33,27 @@ descendant) — a top-level row survives if it or any descendant matches.`,
 
   @Get('jurisdictions')
   @ApiOperation({
-    summary: 'Distinct jurisdictions across every entity, for filter dropdowns.',
+    summary:
+      'Distinct jurisdictions across every entity, for filter dropdowns.',
   })
   jurisdictions() {
     return this.registryService.getJurisdictions();
+  }
+
+  @Get('suggestions')
+  @ApiOperation({
+    summary:
+      'Typo-tolerant Entity Name suggestions for a search-bar autocomplete.',
+    description: `Ranks every entity (top-level, subsidiary, or FQ) by the same fuzzy match used by
+\`search\` on \`GET /entities\` — exact substring hits first, then closest edit distance — and
+returns the top \`limit\`. Meant to back a suggestions dropdown: selecting one and re-searching
+by its exact \`entityName\` guarantees an exact match.`,
+  })
+  @ApiOkResponse({ type: SuggestionsResponseDto })
+  suggestions(@Query() query: SuggestionsQueryDto) {
+    return this.registryService.getEntitySuggestions(
+      query.q,
+      query.limit ?? SUGGESTIONS_DEFAULT_LIMIT,
+    );
   }
 }

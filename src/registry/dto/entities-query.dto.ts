@@ -8,7 +8,7 @@ export const PAGE_SIZES = [10, 25, 50, 100] as const;
 export class EntitiesQueryDto {
   @ApiPropertyOptional({
     description:
-      'Case-insensitive substring match on Entity Name, evaluated directly against the database. Matches the top-level entity or any of its descendants (subsidiaries/FQs at any depth); a top-level row stays in the result set if any descendant matches, even if the top-level row itself does not.',
+      'Typo-tolerant match on Entity Name: case-insensitive substring matches always qualify, and close misspellings (small edit distance, scaled to query length) also qualify. Matches the top-level entity or any of its descendants (subsidiaries/FQs at any depth); a top-level row stays in the result set if any descendant matches, even if the top-level row itself does not. Results are ranked with the closest match first.',
     example: 'northwind',
   })
   @IsOptional()

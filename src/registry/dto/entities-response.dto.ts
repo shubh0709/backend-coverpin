@@ -62,7 +62,7 @@ export class EntityChildDto {
   @ApiProperty({
     example: false,
     description:
-      "Whether this row's own Entity Name matched the `search` term (false when no search is active). The client uses this to auto-expand the path down to a matching descendant.",
+      "Whether this row's own Entity Name is an exact (case-insensitive substring) hit for the `search` term — false when no search is active, and also false for a fuzzy/typo'd hit that only counts toward `search` filtering, not this flag. The client uses this to auto-expand the path down to, and highlight, a matching descendant.",
   })
   matchesSearch: boolean;
 }
@@ -114,7 +114,7 @@ export class EntityListItemDto {
   @ApiProperty({
     example: false,
     description:
-      "Whether this row's own Entity Name matched the `search` term (false when no search is active).",
+      "Whether this row's own Entity Name is an exact (case-insensitive substring) hit for the `search` term (false when no search is active, and also false for a fuzzy/typo'd hit).",
   })
   matchesSearch: boolean;
 }
@@ -131,7 +131,8 @@ export class EntitiesListResponseDto {
 
   @ApiProperty({
     example: 8,
-    description: 'Total top-level entities matching the current filters, across all pages.',
+    description:
+      'Total top-level entities matching the current filters, across all pages.',
   })
   total: number;
 

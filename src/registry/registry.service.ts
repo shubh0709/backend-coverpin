@@ -21,6 +21,7 @@ import { normalizeName, toDateOnlyString } from './validation/common';
 import { EntitiesQueryDto } from './dto/entities-query.dto';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 import { groupBy } from './util/group-by';
+import { fuzzyMatchScore } from './util/fuzzy-match';
 
 export interface ListChild {
   id: string;
@@ -39,8 +40,18 @@ export interface ListChild {
    * recursive to arbitrary depth (the graph is guaranteed acyclic by
    * validation, so this always terminates). FQs are terminal: always []. */
   children: ListChild[];
-  /** Whether this row's own entityName matched the active `search` term. */
+  /** Whether this row's own entityName is an exact (substring) hit for the
+   * active `search` term — false for a fuzzy/typo'd hit, even though that
+   * still counts toward which rows `search` filters in. */
   matchesSearch: boolean;
+}
+
+export interface EntitySuggestion {
+  id: string;
+  entityName: string;
+  registrationType: 'Entity' | 'FQ';
+  jurisdiction: string;
+  entityType: string;
 }
 
 @Injectable()
@@ -157,29 +168,38 @@ export class RegistryService {
   async getEntitiesList(query: EntitiesQueryDto) {
     const today = new Date();
 
-    // The search term is matched directly in the database (case-insensitive
-    // substring on entity_name), not against the in-memory tree — this runs
-    // as a real SQL query against Postgres. It intentionally matches at
-    // every level (top-level entity, subsidiary, or FQ); `matchedIds` below
-    // is then used both to decide which top-level branches survive
-    // filtering and to flag exactly which node(s) matched so the client can
-    // auto-expand the path down to them.
     const term = query.search?.trim();
-    let matchedIds: Set<string> | null = null;
-    if (term) {
-      const matches: { id: string }[] = await this.entityRepo
-        .createQueryBuilder('e')
-        .select('e.id', 'id')
-        .where('e.entity_name ILIKE :term', { term: `%${term}%` })
-        .getRawMany();
-      matchedIds = new Set(matches.map((m) => m.id));
-    }
 
     const [entities, edges, filings] = await Promise.all([
       this.entityRepo.find(),
       this.edgeRepo.find(),
       this.filingRepo.find(),
     ]);
+
+    // The search term is matched in memory against every entity's name,
+    // typo-tolerant: a direct substring hit scores 0, and a fuzzy (edit
+    // distance) hit scores its distance — lower is a closer match. It
+    // intentionally matches at every level (top-level entity, subsidiary, or
+    // FQ); `matchedIds` (substring OR fuzzy) is used to decide which
+    // top-level branches survive filtering, and `scoreById` lets the
+    // top-level rows be ranked by their best-matching descendant so the
+    // closest match — even a mistyped one — surfaces first. `matchesSearch`
+    // on individual rows (below) is intentionally stricter: it's only set
+    // for an exact substring hit (score 0), so the row highlight/auto-expand
+    // never lights up a row where nothing actually looks like what was
+    // typed — a fuzzy hit still surfaces its top-level entity via ranking,
+    // just without a highlight that would have nothing to point at.
+    let matchedIds: Set<string> | null = null;
+    let scoreById: Map<string, number> | null = null;
+    if (term) {
+      scoreById = new Map();
+      for (const entity of entities) {
+        const score = fuzzyMatchScore(term, entity.entityName);
+        if (score !== null) scoreById.set(entity.id, score);
+      }
+      matchedIds = new Set(scoreById.keys());
+    }
+    const isExactMatch = (id: string) => scoreById?.get(id) === 0;
 
     const entityById = new Map(entities.map((e) => [e.id, e]));
     const filingsByEntityId = groupBy(filings, (f) => f.entityId);
@@ -236,7 +256,7 @@ export class RegistryService {
             subsidiaryCount: 0,
             fqCount: 0,
             children: [],
-            matchesSearch: matchedIds?.has(fq.id) ?? false,
+            matchesSearch: isExactMatch(fq.id),
           };
         },
       );
@@ -263,7 +283,7 @@ export class RegistryService {
             subsidiaryCount: (edgesByParent.get(child.id) ?? []).length,
             fqCount: (fqsByDomesticId.get(child.id) ?? []).length,
             children: buildChildren(child.id),
-            matchesSearch: matchedIds?.has(child.id) ?? false,
+            matchesSearch: isExactMatch(child.id),
           };
         });
 
@@ -284,7 +304,7 @@ export class RegistryService {
         subsidiaryCount: (edgesByParent.get(entity.id) ?? []).length,
         fqCount: (fqsByDomesticId.get(entity.id) ?? []).length,
         children: buildChildren(entity.id),
-        matchesSearch: matchedIds?.has(entity.id) ?? false,
+        matchesSearch: isExactMatch(entity.id),
       };
     });
 
@@ -319,7 +339,31 @@ export class RegistryService {
     }): boolean => nodeMatches(node) || node.children.some(subtreeMatches);
 
     rows = rows.filter(subtreeMatches);
-    rows.sort((a, b) => a.entityName.localeCompare(b.entityName));
+
+    // The best (lowest) match score anywhere in a row's subtree — a
+    // top-level entity whose match lives on a deeply nested subsidiary or FQ
+    // still ranks by that descendant's resemblance to the search term.
+    const bestScoreInSubtree = (node: {
+      id: string;
+      children: ListChild[];
+    }): number => {
+      let best = scoreById?.get(node.id) ?? Infinity;
+      for (const child of node.children) {
+        const childBest = bestScoreInSubtree(child);
+        if (childBest < best) best = childBest;
+      }
+      return best;
+    };
+
+    if (term) {
+      rows.sort((a, b) => {
+        const scoreDiff = bestScoreInSubtree(a) - bestScoreInSubtree(b);
+        if (scoreDiff !== 0) return scoreDiff;
+        return a.entityName.localeCompare(b.entityName);
+      });
+    } else {
+      rows.sort((a, b) => a.entityName.localeCompare(b.entityName));
+    }
 
     const total = rows.length;
     const pageSize = query.pageSize ?? 10;
@@ -329,6 +373,45 @@ export class RegistryService {
     const data = rows.slice(start, start + pageSize);
 
     return { data, page, pageSize, total, totalPages };
+  }
+
+  /** Typo-tolerant name suggestions for the search bar's autocomplete
+   * dropdown — every entity at any level (top-level, subsidiary, or FQ) is a
+   * candidate, ranked by the same fuzzy score as `search` (exact substring
+   * hits first, then closest edit distance). Clicking a suggestion is meant
+   * to hand its exact `entityName` back to `search`, so this deliberately
+   * returns the canonical name rather than anything about *why* it matched. */
+  async getEntitySuggestions(
+    q: string,
+    limit: number,
+  ): Promise<{ suggestions: EntitySuggestion[] }> {
+    const term = q.trim();
+    if (!term) return { suggestions: [] };
+
+    const entities = await this.entityRepo.find();
+    const suggestions = entities
+      .map((entity) => ({
+        entity,
+        score: fuzzyMatchScore(term, entity.entityName),
+      }))
+      .filter(
+        (x): x is { entity: EntityRecord; score: number } => x.score !== null,
+      )
+      .sort(
+        (a, b) =>
+          a.score - b.score ||
+          a.entity.entityName.localeCompare(b.entity.entityName),
+      )
+      .slice(0, limit)
+      .map(({ entity }) => ({
+        id: entity.id,
+        entityName: entity.entityName,
+        registrationType: entity.registrationType,
+        jurisdiction: entity.jurisdiction,
+        entityType: entity.entityType,
+      }));
+
+    return { suggestions };
   }
 
   /** Distinct jurisdictions across every entity (any registration type or
@@ -471,8 +554,11 @@ export class RegistryService {
       );
     }
 
-    let children: { entityName: string; pct: number; unallocatedPct: number }[] =
-      [];
+    let children: {
+      entityName: string;
+      pct: number;
+      unallocatedPct: number;
+    }[] = [];
     if (selectedParentId) {
       const parentEdges = (edgesByParent.get(selectedParentId) ?? []).filter(
         (edge) => {
