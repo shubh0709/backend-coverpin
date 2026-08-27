@@ -3,10 +3,10 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { EntitiesModule } from './entities/entities.module';
-import { AiModule } from './ai/ai.module';
-import { ComplianceEntity } from './entities/entity.entity';
-import { Filing } from './entities/filing.entity';
+import { RegistryModule } from './registry/registry.module';
+import { EntityRecord } from './registry/entities/entity.entity';
+import { OwnershipEdge } from './registry/entities/ownership-edge.entity';
+import { Filing } from './registry/entities/filing.entity';
 
 @Module({
   imports: [
@@ -22,19 +22,19 @@ import { Filing } from './entities/filing.entity';
         return {
           type: 'postgres',
           url: databaseUrl,
-          entities: [ComplianceEntity, Filing],
+          entities: [EntityRecord, OwnershipEdge, Filing],
           // Neon (and most managed Postgres) requires SSL; rejectUnauthorized:false
           // is standard for their pooled connection strings.
           ssl: isProd ? { rejectUnauthorized: false } : false,
-          // Convenient for this take-home-style scaffold; switch to migrations
-          // (npm run migration:run) before treating this as production-grade.
-          synchronize: !isProd,
+          // Schema is owned by the migration in src/database/migrations — it has
+          // CHECK constraints and a partial unique index that TypeORM's
+          // synchronize can't express, so synchronize stays off everywhere.
+          synchronize: false,
           logging: !isProd,
         };
       },
     }),
-    EntitiesModule,
-    AiModule,
+    RegistryModule,
   ],
   controllers: [AppController],
   providers: [AppService],

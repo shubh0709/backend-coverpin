@@ -1,51 +1,44 @@
-# CoverPin Backend
+# Entity Registry — Backend
 
-A NestJS + TypeORM + PostgreSQL API for managing compliance entities (LLCs,
-corporations, partnerships, nonprofits) and the filings they owe across
-jurisdictions, plus an AI endpoint that drafts a compliance checklist for a
-given entity.
+A NestJS + TypeORM + PostgreSQL API for the Entity Registry compliance-tracking
+app: upload `entities.csv` / `ownership.csv` / `filings.csv` (or `.xlsx`
+equivalents) together, get every validation error in one pass if anything is
+wrong, or an atomic write if everything's clean. Serves a browsable
+entity/subsidiary/FQ hierarchy with computed compliance status, and analytics
+aggregates for the frontend's four charts.
 
-This was built as interview-prep scaffolding for a Senior Full Stack Engineer
-role at CoverPin, an AI-native compliance automation platform. Rather than
-sketch the full product surface (services catalog, orders, payments, multiple
-domain modules) shallowly, this repo builds one domain module — Entities and
-their nested Filings — end to end: real state machine, real input validation,
-real (non-mocked) AI integration with output validation, migrations, seed
-data, tests, and a documented deployment path. See "What wasn't built and
-why" below for the explicit scope cuts.
+Full domain spec, decisions, and schema: see `entity-registry-requirements-analysis.md`,
+`entity-registry-db-design.md`, and `entity-registry-open-questions.md` in the
+repo root one level up. This README covers running and deploying this service.
 
 The companion frontend lives in a separate sibling repo (`client-app`) and is
-deployed independently — this is a deliberate two-repo split, not a monorepo.
+deployed independently — a deliberate two-repo split, not a monorepo.
 
 ## Tech stack
 
 - **NestJS 11** (Express platform)
-- **TypeORM 0.3.x** + **PostgreSQL** — pinned to 0.3.x on purpose, not the
-  newer 1.x line (see "Design decisions" below)
-- **class-validator** / **class-transformer** for both incoming DTO
-  validation and outgoing AI-response validation
-- **OpenAI SDK** (`openai` package) for the compliance checklist generation,
-  using structured `json_schema` output
+- **TypeORM 0.3.x** + **PostgreSQL** — schema owned entirely by the migration
+  in `src/database/migrations/` (CHECK constraints, a partial unique index on
+  `business_id`); `synchronize` is off everywhere so there's no drift between
+  what the migration says and what TypeORM infers from the entity classes.
+- **csv-parse** and **xlsx** (SheetJS) for parsing uploads — both produce a
+  plain `string[][]` matrix so the rest of the validation pipeline doesn't
+  care which format came in.
 - **Swagger** (`@nestjs/swagger`) for interactive API docs
-- **Jest** + **Supertest** for unit and e2e tests
+- **Jest** for unit tests
 - **Docker** (docker-compose for local Postgres, multi-stage Dockerfile for
   deployment)
 - **Neon** (managed Postgres) + **Render** (hosting) for deployment
-- **npm** as the package manager
 
 ## Local setup
 
-Requires Node 20.19+ or Node 22+ (see note below), Docker, and an npm
-registry connection.
+Requires Node 20.19+ or Node 22+, Docker, and an npm registry connection.
 
 ```bash
-git clone <this-repo-url>
-cd coverpin-backend
 npm install
 cp .env.example .env
 docker compose up -d
 npm run migration:run
-npm run seed
 npm run start:dev
 ```
 
@@ -57,59 +50,70 @@ Then check:
 Notes:
 
 - `docker compose up -d` starts a local Postgres 16 container **mapped to
-  host port 5433, not 5432** (see `docker-compose.yml`). This is deliberate —
-  5432 is commonly already bound by another local Postgres instance, and a
-  silent port clash is a more confusing failure mode than a nonstandard port.
-  `.env.example`'s `DATABASE_URL` already points at 5433.
-- `OPENAI_API_KEY` is optional for everything except the compliance-checklist
-  endpoint. The rest of the API (entities, filings, health) works fine
-  without it. If you want to exercise the AI endpoint, set a real key in
-  `.env`.
-- This repo was developed and verified on Node 20.11.1. NestJS/its
-  dependencies print `engines` version warnings on that version — the app
-  still runs correctly, but if you want a clean install with no warnings,
-  use Node 20.19+ or 22+.
+  host port 5433, not 5432** (see `docker-compose.yml`) — deliberate, to
+  avoid clashing with a Postgres instance already running on the default
+  port locally. `.env.example`'s `DATABASE_URL` already points at 5433.
+- There's no seed script. Upload `entities.csv` / `ownership.csv` /
+  `filings.csv` from the repo root (one level up) through `POST /api/upload`
+  to populate local data — see "Trying it against real data" below.
 
-## API testing
+## API surface
 
-- **Swagger UI** at `/api/docs` once the server is running — every route,
-  request/response shape, and enum value is documented there.
-- **Postman**: import both files in `postman/` —
-  `CoverPin-Backend.postman_collection.json` (requests) and
-  `CoverPin-Local.postman_environment.json` (environment, `baseUrl` defaults
-  to `http://localhost:4000/api`). The collection's test scripts
-  auto-capture `entityId` and `filingId` from responses into collection
-  variables, so you can run requests in order (create entity → create filing
-  → transition filing → ...) without manually copying IDs between requests.
-  It also includes a request that deliberately attempts an invalid filing
-  transition and expects a 400, to exercise the state machine's guard rails.
+Everything's under `/api`, documented interactively at `/api/docs`. The
+three endpoints:
+
+- **`POST /api/upload`** — `multipart/form-data` with three file fields:
+  `entities`, `ownership`, `filings` (each `.csv` or single-sheet `.xlsx`).
+  Returns `201` with row counts on success, or `422` with a full
+  `{ errors: [{ file, line, column, message }, ...] }` list — every error in
+  the batch, not just the first, spreadsheet-native line numbers (header =
+  line 1). Nothing is written if `errors` is non-empty. Re-uploading is
+  idempotent: rows are upserted by natural key (`entity_name`;
+  `(parent, child)`; `(entity, filing_type, due_date)`), so re-running the
+  same files never creates duplicates.
+- **`GET /api/entities`** — top-level entities (no incoming ownership edge),
+  each expandable to its direct FQs and subsidiaries (one level). Query
+  params: `search`, `entityStatus`, `complianceStatus`, `jurisdiction`.
+- **`GET /api/analytics`** — the four chart datasets. Query params:
+  `jurisdiction`, `entityStatus`, `parentEntityId`.
+
+## Trying it against real data
+
+The repo root (one level up) has a clean, deliberately-valid sample dataset —
+`entities.csv`, `ownership.csv`, `filings.csv` — that exercises every branch
+of the compliance ladder. With the server running:
+
+```bash
+curl -X POST http://localhost:4000/api/upload \
+  -F "entities=@../entities.csv;type=text/csv" \
+  -F "ownership=@../ownership.csv;type=text/csv" \
+  -F "filings=@../filings.csv;type=text/csv"
+
+curl http://localhost:4000/api/entities
+curl http://localhost:4000/api/analytics
+```
 
 ## Testing
 
 ```bash
-npm test          # unit tests — mocked repos/OpenAI client, no DB needed
-npm run test:e2e  # e2e tests — needs the docker-compose Postgres running
+npm test          # unit tests — no DB needed
 ```
 
-- `entities.service.spec.ts` — duplicate-entity rejection, not-found paths,
-  and valid/invalid/terminal-state filing transitions, all against mocked
-  TypeORM repositories.
-- `ai.service.spec.ts` — mocks the `openai` package to cover: missing API
-  key, a valid structured response, a response that fails schema validation
-  (simulating an LLM hallucination), and a wrapped network failure.
-- `app.e2e-spec.ts` / `entities.e2e-spec.ts` — real HTTP requests against a
-  real NestJS app + real Postgres: invalid jurisdiction rejected, missing
-  fields rejected, full create → duplicate-rejected → filing lifecycle walk
-  (including a rejected skip-to-CONFIRMED and a rejected transition out of
-  the terminal CONFIRMED state) → 404 on a missing entity → 400 on a
-  malformed UUID.
+- `src/registry/compliance/compliance.util.spec.ts` — the compliance-status
+  ladder, every branch and every boundary (`d = 90`, `d = 0`, `d = -364`),
+  plus the brief's own worked example (a Dissolved entity years overdue is
+  `NOT_APPLICABLE`, not `SUSPENDED`).
+- `src/registry/validation/graph-validator.spec.ts` — cycle detection
+  (direct, multi-hop, and cycles that only close once merged with
+  already-persisted edges), and the per-child >100% ownership check.
+- `src/app.controller.spec.ts` — health check.
 
-`test/jest-e2e.json` pins `maxWorkers: 1`. This was necessary: with
-`synchronize: true` in non-production (see below), running e2e suites across
-multiple Jest workers caused a race where two workers tried to create the
-same Postgres enum type concurrently and one failed. Running the e2e suite
-single-threaded avoids it entirely, at the cost of some speed — acceptable
-for a suite this size.
+Manually verified end-to-end against the sample data above: all 12 rows'
+compliance statuses match `entity-registry-db-design.md`'s worked table
+exactly, `.xlsx` upload parses identically to `.csv`, a deliberately broken
+upload reports every error across all three files in one response with
+nothing written, and re-uploading the clean set twice leaves row counts
+unchanged (idempotent upsert).
 
 ## Deployment
 
@@ -119,27 +123,25 @@ for a suite this size.
 2. Copy the **pooled** connection string from the Neon dashboard (Connection
    Details → pooled connection).
 3. That string is your production `DATABASE_URL`.
+4. Run the migration against it once, before traffic depends on the schema
+   existing: `DATABASE_URL=<neon-pooled-url> NODE_ENV=production npm run migration:run`
+   (from your local machine, or a one-off Render shell after the first deploy).
 
 **Backend (Render):**
 
 1. Push this repo to GitHub, then connect it in Render as a new Blueprint —
-   Render will pick up `render.yaml` automatically (`runtime: docker`,
-   health check at `/api/health`).
-2. `render.yaml` marks `DATABASE_URL`, `CORS_ORIGIN`, and `OPENAI_API_KEY` as
-   `sync: false`, meaning Render won't set them for you — add them manually
-   in the service's Environment tab in the Render dashboard:
+   Render picks up `render.yaml` automatically (`runtime: docker`, health
+   check at `/api/health`).
+2. `render.yaml` marks `DATABASE_URL` and `CORS_ORIGIN` as `sync: false`,
+   meaning Render won't set them for you — add them manually in the
+   service's Environment tab:
    - `DATABASE_URL` — the Neon pooled connection string from above
-   - `CORS_ORIGIN` — the deployed frontend's URL (e.g. its Vercel URL), once
-     it exists. Comma-separate multiple origins if needed.
-   - `OPENAI_API_KEY` — your OpenAI key, if you want the compliance-checklist
-     endpoint to work in production.
-3. `NODE_ENV=production`, `PORT=4000`, and `OPENAI_MODEL=gpt-4o-mini` are
-   already set as plain values in `render.yaml`.
+   - `CORS_ORIGIN` — the deployed frontend's URL (its Vercel URL), once it
+     exists. Comma-separate multiple origins if needed.
+3. `NODE_ENV=production` and `PORT=4000` are already set as plain values in
+   `render.yaml`.
 4. Render builds the Dockerfile (multi-stage, `node:22-alpine`) and deploys.
-   Migrations are not run automatically on deploy — run `npm run
-   migration:run` against the production `DATABASE_URL` (e.g. from your
-   local machine or a one-off Render shell) after the first deploy, before
-   traffic depends on the schema existing.
+   Migrations are not run automatically on deploy — see step 4 above.
 
 Why Render instead of Vercel: Vercel's hosting model is built around
 short-lived serverless functions, which fights a NestJS app that wants a
@@ -149,97 +151,58 @@ expects.
 
 ## Design decisions & trade-offs
 
-- **Forward-only filing state machine.** `Filing.status` moves
-  `PENDING -> AI_PROCESSING -> FILED -> CONFIRMED` and nothing else, enforced
-  by an explicit transition map in `EntitiesService.transitionFilingStatus`
-  (`AI_PROCESSING` can also fall back to `PENDING`, everything else is a hard
-  wall). Any attempt to skip a stage, go backward, or act on a terminal
-  filing throws a 400 with the allowed next states in the message. This is a
-  small in-process state machine, not a library — appropriate at this scale,
-  but see "what I'd do with more time" below on where it stops being enough.
-- **AI output is not trusted.** `AiService` asks OpenAI for `json_schema`
-  structured output, but still runs the parsed result through
-  `class-validator` (`ComplianceChecklistResultDto`) before it's allowed
-  anywhere near the database. A response that's missing a field, has the
-  wrong type, or invents a `priority` value outside `LOW/MEDIUM/HIGH` is
-  rejected with a 502, not silently persisted. Network failures and
-  malformed JSON are caught and wrapped the same way. If `OPENAI_API_KEY` is
-  unset, the failure happens lazily at call time (503), not at app startup —
-  the rest of the API doesn't depend on OpenAI being configured.
-- **Audit fields on the entity, not a separate table.** `lastComplianceCheck`
-  (jsonb) and `lastCheckedAt` capture the most recent AI result directly on
-  `ComplianceEntity`. That's enough to show "when did we last check this
-  entity and what did we find" without building a full audit-log table for a
-  single AI call site.
-- **TypeORM pinned to 0.3.x**, not the newer 1.x. 1.x's CLI has a known
-  yargs ESM/CommonJS bug that breaks `migration:generate` and
-  `migration:run` outright. 0.3.x is also what essentially all current
-  NestJS documentation and tutorials assume, which matters when moving fast
-  under interview-style time pressure — less time fighting version-specific
-  API differences.
-- **Jurisdiction is a validated string code**, not a foreign key into a
-  jurisdiction table (`CreateEntityDto` regex-checks the
-  `COUNTRY-SUBDIVISION` shape, e.g. `US-DE`, `CA-ON`). Fine for a handful of
-  jurisdictions with no jurisdiction-specific rules yet; would not scale to
-  per-jurisdiction filing requirements or due-date rules.
-- **Local Postgres on host port 5433.** `docker-compose.yml` maps
-  `5433:5432` specifically so this doesn't collide with a Postgres instance
-  someone already has running on the default port — a small thing, but the
-  alternative is a confusing "port already in use" error on first run.
-- **`synchronize: true` outside production, migrations in production.**
-  Fast iteration locally; the one migration that exists (`InitSchema`) is
-  what actually runs in a deployed environment, so schema drift between
-  environments doesn't happen. The trade-off is the e2e test threading issue
-  noted above.
+- **Validation runs entirely before any write.** `ValidationService` parses
+  and validates all three files (including cross-file references and
+  whole-graph cycle/over-100% checks against the *merged* graph — this
+  upload's edges layered onto whatever's already persisted) and returns a
+  complete error list. `RegistryService.processUpload` only opens a DB
+  transaction if that list is empty, so "reject the whole batch atomically"
+  falls out of the control flow rather than needing a savepoint/rollback
+  dance.
+- **Ownership references (`ownership.csv`, `filings.csv`) must resolve
+  within the *same upload's* `entities.csv`**, not against whatever's
+  already in the database. Every upload is treated as a complete, internally
+  consistent snapshot of the entities it touches — simpler to reason about
+  and validate than allowing a filings-only or ownership-only upload against
+  prior state. Documented as an explicit interpretive choice in
+  `entity-registry-open-questions.md`.
+- **Cycle/over-100% detection considers persisted history, not just the
+  current upload.** A re-upload only carries the edges it's changing; an old
+  edge from a previous upload that this batch doesn't touch is still part of
+  the graph. `graph-validator.ts` merges this upload's edges onto the
+  existing persisted set (by `(parent, child)` key, upsert semantics) before
+  running DFS cycle detection and the per-child percentage sum — otherwise a
+  cycle spanning uploads would slip through.
+- **Compliance status and next-due-date are computed at read time**, in
+  `compliance.util.ts`, a small pure function taking `entityStatus`,
+  `nextDueDate`, and `today` — not stored, since they're a function of the
+  current date and would go stale. `RegistryService` computes them
+  independently for every row (top-level, subsidiary, and FQ alike), per
+  the brief's "per registration" wording.
+- **The list page shows one level of expansion**, not full recursive
+  nesting — a subsidiary's own subsidiaries exist in the data (and are
+  fully validated) but aren't shown nested under it yet. See
+  `entity-registry-open-questions.md` Q2/Q3 for the reasoning and what a
+  fuller implementation would need.
+- **`synchronize` is off everywhere.** The migration has CHECK constraints
+  and a partial unique index that TypeORM's decorator-driven sync can't
+  faithfully reproduce, so the migration is the single source of truth for
+  schema instead of two systems that could drift apart.
 
 ## What wasn't built and why
 
-This scope deliberately does not cover the full CoverPin product surface.
-Specifically, out of scope:
+See `entity-registry-open-questions.md` for the full list of scope
+boundaries (each traceable back to a specific open question from the
+requirements analysis) — highlights:
 
-- **Auth (Clerk).** The JD names Clerk explicitly, but it's left out here so
-  the lean scaffold stays focused on the compliance domain modeling itself
-  rather than auth wiring. In a real assignment with auth in scope, a Clerk
-  guard/strategy would be the first thing added, ahead of any business
-  logic.
-- **Stripe payments and AWS S3 document storage.** Both are named in the JD
-  and both matter to the real product (pay-per-service ordering, filing
-  document attachments), but neither is needed by the Entities/Filings
-  module as built. Would add S3 for attaching filing documents and Stripe
-  for the pay-per-service ordering flow that's part of CoverPin's actual
-  business model.
-- **A services catalog / order-placement flow** (browse services, place an
-  order, track order status). That's the "full demo product" version of
-  this exercise. Deliberately scoped down to one domain module built
-  properly end-to-end, instead of several modules built shallowly.
-- **A jurisdiction master table.** Current approach (validated string code)
-  is fine for a handful of jurisdictions; would need a real table with
-  per-jurisdiction rules once that logic exists.
-- **A real workflow engine (e.g. Temporal) for filings.** The in-process
-  state machine works at this scale, but it doesn't survive a process
-  restart mid-filing, has no retry/backoff semantics, and doesn't
-  orchestrate work across services. Fine for a demo, not for production
-  filing volume.
-- **Multi-tenant isolation, soft deletes, rate limiting, request
-  logging/observability, pagination on list endpoints.** All reasonable
-  fast-follows, none built here — noted rather than silently skipped.
-
-## What I'd do with more time
-
-- Add pagination and filtering (by jurisdiction, status, entity type) to the
-  list endpoints — they currently return everything.
-- Add a jurisdiction table with per-jurisdiction filing-type rules, and use
-  it to drive the AI prompt instead of relying on the model's general
-  knowledge.
-- Add S3-backed document attachments on filings (upload a signed filing,
-  store the object key, not the file itself, in Postgres).
-- Add Clerk auth with a simple ownership model (an entity belongs to an
-  account), plus row-level access checks in the service layer.
-- Add structured request logging and basic observability (request IDs,
-  latency, error rates) — currently there's console logging via Nest's
-  `Logger` and nothing more.
-- Move the filing state machine into something that survives process
-  restarts and supports retries/backoff for the AI-processing step, once
-  filing volume or AI latency makes that necessary.
-- Add rate limiting on the AI endpoint specifically — it's the one route
-  that costs money per call and currently has no throttling.
+- **Multi-level nested expansion** on the list page (grandchildren under a
+  subsidiary's own row). Data model supports arbitrary depth; the UI
+  doesn't render past one level yet.
+- **No jurisdiction cross-check** between `filings.csv` and the matching
+  entity's registered jurisdiction — treated as an independent field.
+- **No canonical jurisdiction list** — format-only validation
+  (`Country` or `Country/State`), any text accepted on each side.
+- **No auth, no concurrency handling beyond DB transactions** — single-
+  operator demo tool.
+- **No upload-history/audit-log table** — natural-key upsert covers
+  idempotency without one.

@@ -27,12 +27,14 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle('CoverPin Backend API')
+    .setTitle('Entity Registry API')
     .setDescription(
-      'Compliance entities, filings, and AI-generated compliance checklists.',
+      'Upload entities/ownership/filings spreadsheets, browse the entity hierarchy, and pull compliance analytics.',
     )
     .setVersion('1.0')
+    .addTag('upload')
     .addTag('entities')
+    .addTag('analytics')
     .addTag('health')
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
@@ -40,9 +42,9 @@ async function bootstrap() {
 
   const port = process.env.PORT ?? 4000;
   await app.listen(port);
-  // eslint-disable-next-line no-console
+
   console.log(`coverpin-backend listening on port ${port}`);
-  // eslint-disable-next-line no-console
+
   console.log(`Swagger docs at http://localhost:${port}/api/docs`);
 }
-bootstrap();
+void bootstrap();
