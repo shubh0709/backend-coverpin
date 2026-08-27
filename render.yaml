@@ -5,6 +5,7 @@ services:
     dockerfilePath: ./Dockerfile
     plan: free
     healthCheckPath: /api/health
+    preDeployCommand: npm run migration:run:prod
     envVars:
       - key: NODE_ENV
         value: production
