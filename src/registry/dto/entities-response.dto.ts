@@ -58,6 +58,13 @@ export class EntityChildDto {
       'Percent of this child owned by the top-level parent. Always null for FQ rows — ownership does not apply to them.',
   })
   ownershipPct: number | null;
+
+  @ApiProperty({
+    example: false,
+    description:
+      "Whether this row's own Entity Name matched the `search` term (false when no search is active). The client uses this to auto-expand the path down to a matching descendant.",
+  })
+  matchesSearch: boolean;
 }
 
 export class EntityListItemDto {
@@ -100,12 +107,34 @@ export class EntityListItemDto {
   @ApiProperty({
     type: [EntityChildDto],
     description:
-      'This entity’s FQs followed by its direct subsidiaries, one level deep only.',
+      'This entity’s FQs followed by its direct subsidiaries, recursively nested to arbitrary depth.',
   })
   children: EntityChildDto[];
+
+  @ApiProperty({
+    example: false,
+    description:
+      "Whether this row's own Entity Name matched the `search` term (false when no search is active).",
+  })
+  matchesSearch: boolean;
 }
 
 export class EntitiesListResponseDto {
   @ApiProperty({ type: [EntityListItemDto] })
   data: EntityListItemDto[];
+
+  @ApiProperty({ example: 1, description: '1-indexed current page.' })
+  page: number;
+
+  @ApiProperty({ example: 10, description: 'Rows per page.' })
+  pageSize: number;
+
+  @ApiProperty({
+    example: 8,
+    description: 'Total top-level entities matching the current filters, across all pages.',
+  })
+  total: number;
+
+  @ApiProperty({ example: 1, description: 'Total number of pages.' })
+  totalPages: number;
 }

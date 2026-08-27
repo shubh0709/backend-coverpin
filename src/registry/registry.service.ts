@@ -39,6 +39,8 @@ export interface ListChild {
    * recursive to arbitrary depth (the graph is guaranteed acyclic by
    * validation, so this always terminates). FQs are terminal: always []. */
   children: ListChild[];
+  /** Whether this row's own entityName matched the active `search` term. */
+  matchesSearch: boolean;
 }
 
 @Injectable()
@@ -154,6 +156,25 @@ export class RegistryService {
 
   async getEntitiesList(query: EntitiesQueryDto) {
     const today = new Date();
+
+    // The search term is matched directly in the database (case-insensitive
+    // substring on entity_name), not against the in-memory tree — this runs
+    // as a real SQL query against Postgres. It intentionally matches at
+    // every level (top-level entity, subsidiary, or FQ); `matchedIds` below
+    // is then used both to decide which top-level branches survive
+    // filtering and to flag exactly which node(s) matched so the client can
+    // auto-expand the path down to them.
+    const term = query.search?.trim();
+    let matchedIds: Set<string> | null = null;
+    if (term) {
+      const matches: { id: string }[] = await this.entityRepo
+        .createQueryBuilder('e')
+        .select('e.id', 'id')
+        .where('e.entity_name ILIKE :term', { term: `%${term}%` })
+        .getRawMany();
+      matchedIds = new Set(matches.map((m) => m.id));
+    }
+
     const [entities, edges, filings] = await Promise.all([
       this.entityRepo.find(),
       this.edgeRepo.find(),
@@ -215,6 +236,7 @@ export class RegistryService {
             subsidiaryCount: 0,
             fqCount: 0,
             children: [],
+            matchesSearch: matchedIds?.has(fq.id) ?? false,
           };
         },
       );
@@ -241,6 +263,7 @@ export class RegistryService {
             subsidiaryCount: (edgesByParent.get(child.id) ?? []).length,
             fqCount: (fqsByDomesticId.get(child.id) ?? []).length,
             children: buildChildren(child.id),
+            matchesSearch: matchedIds?.has(child.id) ?? false,
           };
         });
 
@@ -261,19 +284,21 @@ export class RegistryService {
         subsidiaryCount: (edgesByParent.get(entity.id) ?? []).length,
         fqCount: (fqsByDomesticId.get(entity.id) ?? []).length,
         children: buildChildren(entity.id),
+        matchesSearch: matchedIds?.has(entity.id) ?? false,
       };
     });
 
     // A branch stays visible under a filter if it, or any of its
-    // descendants at any depth, matches every active filter.
-    const term = query.search?.trim().toLowerCase();
+    // descendants at any depth, matches every active filter. `search` is
+    // decided by DB membership in `matchedIds` above, not a JS string
+    // comparison.
     const nodeMatches = (node: {
-      entityName: string;
+      id: string;
       entityStatus: string;
       complianceStatus: string;
       jurisdiction: string;
     }): boolean => {
-      if (term && !node.entityName.toLowerCase().includes(term)) return false;
+      if (matchedIds && !matchedIds.has(node.id)) return false;
       if (query.entityStatus && node.entityStatus !== query.entityStatus)
         return false;
       if (
@@ -286,7 +311,7 @@ export class RegistryService {
       return true;
     };
     const subtreeMatches = (node: {
-      entityName: string;
+      id: string;
       entityStatus: string;
       complianceStatus: string;
       jurisdiction: string;
@@ -296,7 +321,26 @@ export class RegistryService {
     rows = rows.filter(subtreeMatches);
     rows.sort((a, b) => a.entityName.localeCompare(b.entityName));
 
-    return { data: rows };
+    const total = rows.length;
+    const pageSize = query.pageSize ?? 10;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(query.page ?? 1, 1), totalPages);
+    const start = (page - 1) * pageSize;
+    const data = rows.slice(start, start + pageSize);
+
+    return { data, page, pageSize, total, totalPages };
+  }
+
+  /** Distinct jurisdictions across every entity (any registration type or
+   * depth) — backs the list page's jurisdiction filter dropdown, which needs
+   * the full option set independent of pagination. */
+  async getJurisdictions(): Promise<{ jurisdictions: string[] }> {
+    const rows: { jurisdiction: string }[] = await this.entityRepo
+      .createQueryBuilder('e')
+      .select('DISTINCT e.jurisdiction', 'jurisdiction')
+      .orderBy('e.jurisdiction', 'ASC')
+      .getRawMany();
+    return { jurisdictions: rows.map((r) => r.jurisdiction) };
   }
 
   async getAnalytics(query: AnalyticsQueryDto) {

@@ -1,17 +1,37 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { ENTITY_STATUSES } from '../entities/entity.entity';
 import { COMPLIANCE_STATUSES } from './entities-response.dto';
 
+export const PAGE_SIZES = [10, 25, 50, 100] as const;
+
 export class EntitiesQueryDto {
   @ApiPropertyOptional({
     description:
-      'Case-insensitive substring match on Entity Name. Only matches the top-level entity, not its children.',
+      'Case-insensitive substring match on Entity Name, evaluated directly against the database. Matches the top-level entity or any of its descendants (subsidiaries/FQs at any depth); a top-level row stays in the result set if any descendant matches, even if the top-level row itself does not.',
     example: 'northwind',
   })
   @IsOptional()
   @IsString()
   search?: string;
+
+  @ApiPropertyOptional({
+    description: '1-indexed page of top-level entities to return.',
+    default: 1,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({
+    enum: PAGE_SIZES,
+    description: 'Number of top-level entities per page.',
+    default: 10,
+  })
+  @IsOptional()
+  @IsIn(PAGE_SIZES)
+  pageSize?: number;
 
   @ApiPropertyOptional({
     enum: ENTITY_STATUSES,
