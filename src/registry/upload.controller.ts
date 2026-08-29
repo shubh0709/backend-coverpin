@@ -22,7 +22,11 @@ interface UploadFileFields {
   filings?: Express.Multer.File[];
 }
 
-const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+// FileFieldsInterceptor's options are evaluated once at module load, before
+// Nest DI is available, so this reads process.env directly (same timing
+// main.ts already uses for PORT/CORS_ORIGIN) rather than via ConfigService.
+const MAX_FILE_SIZE_BYTES =
+  Number(process.env.MAX_UPLOAD_FILE_SIZE_BYTES) || 10 * 1024 * 1024;
 
 @ApiTags('upload')
 @Controller('upload')
@@ -36,7 +40,8 @@ export class UploadController {
     description: `Validates the whole batch first — if any row in any file has an error, nothing is
 written and every error found is returned at once (HTTP 422), sorted file → line → column.
 All three fields are required on every call, even for a partial re-upload; re-send the
-unchanged files as-is. Each file may be \`.csv\` or a single-sheet \`.xlsx\`, up to 10 MB.
+unchanged files as-is. Each file may be \`.csv\` or a single-sheet \`.xlsx\`, up to
+${(MAX_FILE_SIZE_BYTES / (1024 * 1024)).toFixed(0)} MB.
 Writes are upserts keyed on natural keys (Entity Name; parent/child pair; entity/filing
 type/due-date), so re-uploading the same data is safe to retry.
 

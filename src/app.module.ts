@@ -7,10 +7,11 @@ import { RegistryModule } from './registry/registry.module';
 import { EntityRecord } from './registry/entities/entity.entity';
 import { OwnershipEdge } from './registry/entities/ownership-edge.entity';
 import { Filing } from './registry/entities/filing.entity';
+import limitsConfig from './config/limits.config';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, load: [limitsConfig] }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {

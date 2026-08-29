@@ -1,6 +1,7 @@
 import { Injectable, UnprocessableEntityException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import {
   EntityRecord,
   EntityTypeValue,
@@ -22,6 +23,7 @@ import { EntitiesQueryDto } from './dto/entities-query.dto';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 import { groupBy } from './util/group-by';
 import { fuzzyMatchScore } from './util/fuzzy-match';
+import { chunk } from './util/chunk';
 
 export interface ListChild {
   id: string;
@@ -59,6 +61,7 @@ export class RegistryService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly validationService: ValidationService,
+    private readonly configService: ConfigService,
     @InjectRepository(EntityRecord)
     private readonly entityRepo: Repository<EntityRecord>,
     @InjectRepository(OwnershipEdge)
@@ -74,6 +77,10 @@ export class RegistryService {
       throw new UnprocessableEntityException({ errors });
     }
 
+    const chunkSize = this.configService.get<number>(
+      'limits.uploadBatchChunkSize',
+    )!;
+
     return this.dataSource.transaction(async (manager) => {
       const entityRepo = manager.getRepository(EntityRecord);
       const edgeRepo = manager.getRepository(OwnershipEdge);
@@ -81,10 +88,11 @@ export class RegistryService {
 
       // Pass 1: upsert every entities.csv row by natural key (entity_name),
       // without domestic_entity_id — the entity it points at might not have
-      // an id yet if it appears later in the same file.
-      for (const row of entityRows) {
+      // an id yet if it appears later in the same file. Batched into a
+      // handful of multi-row upserts instead of one query per row.
+      for (const batch of chunk(entityRows, chunkSize)) {
         await entityRepo.upsert(
-          {
+          batch.map((row) => ({
             entityName: row.entityName,
             entityNameKey: normalizeName(row.entityName),
             registrationType: row.registrationType,
@@ -99,52 +107,88 @@ export class RegistryService {
               : null,
             businessId: row.businessId,
             globalRegion: row.globalRegion as GlobalRegion | null,
-          },
+          })),
           ['entityNameKey'],
         );
       }
 
-      const allEntities = await entityRepo.find();
+      // Every name any row in this batch could resolve to (entity rows
+      // themselves, FQ -> domestic entity, ownership parent/child, filing
+      // entity) — bounds this lookup to the batch instead of the whole
+      // entities table, however large it's grown from prior uploads.
+      const referencedNames = new Set<string>();
+      for (const row of entityRows) {
+        referencedNames.add(normalizeName(row.entityName));
+        if (row.domesticEntity) {
+          referencedNames.add(normalizeName(row.domesticEntity));
+        }
+      }
+      for (const row of ownershipRows) {
+        referencedNames.add(normalizeName(row.parentEntity));
+        referencedNames.add(normalizeName(row.childEntity));
+      }
+      for (const row of filingRows) {
+        referencedNames.add(normalizeName(row.entityName));
+      }
+      const relevantEntities =
+        referencedNames.size > 0
+          ? await entityRepo.find({
+              where: { entityNameKey: In([...referencedNames]) },
+            })
+          : [];
       // Keyed by normalized name — Entity Name matching is trimmed and
       // case-insensitive everywhere it's compared, including here where
       // ownership/filings rows resolve which entity they refer to.
       const idByName = new Map(
-        allEntities.map((e) => [normalizeName(e.entityName), e.id]),
+        relevantEntities.map((e) => [normalizeName(e.entityName), e.id]),
       );
 
-      // Pass 2: now that every row in this batch has an id, wire up FQ -> domestic entity.
-      for (const row of entityRows) {
-        if (row.registrationType === 'FQ') {
-          await entityRepo.update(
-            { entityNameKey: normalizeName(row.entityName) },
-            {
-              domesticEntityId: row.domesticEntity
-                ? (idByName.get(normalizeName(row.domesticEntity)) ?? null)
-                : null,
-            },
-          );
-        }
-      }
-
-      for (const row of ownershipRows) {
-        const parentEntityId = idByName.get(normalizeName(row.parentEntity));
-        const childEntityId = idByName.get(normalizeName(row.childEntity));
-        if (!parentEntityId || !childEntityId) continue;
-        await edgeRepo.upsert(
-          {
-            parentEntityId,
-            childEntityId,
-            ownershipPct: row.ownershipPct.toFixed(2),
-          },
-          ['parentEntityId', 'childEntityId'],
+      // Pass 2: now that every row in this batch has an id, wire up FQ ->
+      // domestic entity in one statement instead of one UPDATE per FQ row.
+      const fqUpdates = entityRows
+        .filter((row) => row.registrationType === 'FQ')
+        .map((row) => ({
+          key: normalizeName(row.entityName),
+          domesticId: row.domesticEntity
+            ? (idByName.get(normalizeName(row.domesticEntity)) ?? null)
+            : null,
+        }));
+      if (fqUpdates.length > 0) {
+        const values = fqUpdates
+          .map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2}::uuid)`)
+          .join(', ');
+        const params = fqUpdates.flatMap((u) => [u.key, u.domesticId]);
+        await manager.query(
+          `UPDATE entities AS e SET domestic_entity_id = v.domestic_id
+           FROM (VALUES ${values}) AS v(key, domestic_id)
+           WHERE e.entity_name_key = v.key`,
+          params,
         );
       }
 
-      for (const row of filingRows) {
-        const entityId = idByName.get(normalizeName(row.entityName));
-        if (!entityId) continue;
-        await filingRepo.upsert(
-          {
+      const edgeRecords = ownershipRows
+        .map((row) => {
+          const parentEntityId = idByName.get(
+            normalizeName(row.parentEntity),
+          );
+          const childEntityId = idByName.get(normalizeName(row.childEntity));
+          if (!parentEntityId || !childEntityId) return null;
+          return {
+            parentEntityId,
+            childEntityId,
+            ownershipPct: row.ownershipPct.toFixed(2),
+          };
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
+      for (const batch of chunk(edgeRecords, chunkSize)) {
+        await edgeRepo.upsert(batch, ['parentEntityId', 'childEntityId']);
+      }
+
+      const filingRecords = filingRows
+        .map((row) => {
+          const entityId = idByName.get(normalizeName(row.entityName));
+          if (!entityId) return null;
+          return {
             entityId,
             filingType: row.filingType as FilingType,
             jurisdiction: row.jurisdiction,
@@ -152,9 +196,11 @@ export class RegistryService {
             dueDate: toDateOnlyString(row.dueDate),
             filedDate: row.filedDate ? toDateOnlyString(row.filedDate) : null,
             status: row.status as FilingStatus,
-          },
-          ['entityId', 'filingType', 'dueDate'],
-        );
+          };
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
+      for (const batch of chunk(filingRecords, chunkSize)) {
+        await filingRepo.upsert(batch, ['entityId', 'filingType', 'dueDate']);
       }
 
       return {

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EntityRecord } from '../entities/entity.entity';
@@ -46,16 +47,20 @@ export class ValidationService {
     @InjectRepository(OwnershipEdge)
     private readonly edgeRepo: Repository<OwnershipEdge>,
     private readonly parser: FileParserService,
+    private readonly configService: ConfigService,
   ) {}
 
   async validateUpload(files: UploadFiles): Promise<ValidatedUpload> {
     const today = new Date();
     const structuralErrors: ValidationError[] = [];
+    const maxRows = this.configService.get<number>(
+      'limits.maxUploadRowsPerFile',
+    )!;
 
-    const parseSlot = (
+    const parseSlot = async (
       file: Express.Multer.File | undefined,
       slot: UploadSlot,
-    ): ParsedSheet | null => {
+    ): Promise<ParsedSheet | null> => {
       const expected = SLOT_SCHEMAS[slot];
       if (!file) {
         structuralErrors.push(
@@ -68,8 +73,9 @@ export class ValidationService {
         );
         return null;
       }
+      let sheet: ParsedSheet;
       try {
-        return this.parser.parse(file, expected.file);
+        sheet = await this.parser.parse(file, expected.file);
       } catch (e) {
         if (e instanceof FileParseError) {
           structuralErrors.push(e.validationError);
@@ -77,11 +83,23 @@ export class ValidationService {
         }
         throw e;
       }
+      if (sheet.rows.length > maxRows) {
+        structuralErrors.push(
+          makeError(
+            expected.file,
+            1,
+            'File',
+            `'${file.originalname}' has ${sheet.rows.length} rows, which exceeds the ${maxRows}-row limit per file.`,
+          ),
+        );
+        return null;
+      }
+      return sheet;
     };
 
-    const entitiesSheet = parseSlot(files.entities, 'entities');
-    const ownershipSheet = parseSlot(files.ownership, 'ownership');
-    const filingsSheet = parseSlot(files.filings, 'filings');
+    const entitiesSheet = await parseSlot(files.entities, 'entities');
+    const ownershipSheet = await parseSlot(files.ownership, 'ownership');
+    const filingsSheet = await parseSlot(files.filings, 'filings');
 
     const { errors: entityErrors, rows: entityRows } = entitiesSheet
       ? validateEntitiesSheet(entitiesSheet, today)
