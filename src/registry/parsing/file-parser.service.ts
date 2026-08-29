@@ -52,7 +52,9 @@ export class FileParserService {
 
       worker.once('exit', (code) => {
         if (code !== 0) {
-          reject(new Error(`File parser worker stopped with exit code ${code}`));
+          reject(
+            new Error(`File parser worker stopped with exit code ${code}`),
+          );
         }
       });
     });

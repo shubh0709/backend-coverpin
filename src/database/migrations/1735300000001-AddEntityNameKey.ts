@@ -29,9 +29,7 @@ export class AddEntityNameKey1735300000001 implements MigrationInterface {
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `DROP INDEX "entities_entity_name_key_unique";`,
-    );
+    await queryRunner.query(`DROP INDEX "entities_entity_name_key_unique";`);
     await queryRunner.query(
       `ALTER TABLE "entities" DROP COLUMN "entity_name_key";`,
     );

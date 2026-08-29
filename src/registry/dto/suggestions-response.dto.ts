@@ -25,7 +25,7 @@ export class SuggestionsResponseDto {
   @ApiProperty({
     type: [EntitySuggestionDto],
     description:
-      'Closest match first (exact substring hits before fuzzy ones).',
+      'Ranked by where the query appears in the name (earliest first), then name length, then alphabetically.',
   })
   suggestions: EntitySuggestionDto[];
 }

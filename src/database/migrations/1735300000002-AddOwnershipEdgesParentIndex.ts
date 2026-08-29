@@ -5,9 +5,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * even though walking the ownership tree top-down (every subsidiary/FQ
  * expansion in RegistryService) groups edges by parent_entity_id.
  */
-export class AddOwnershipEdgesParentIndex1735300000002
-  implements MigrationInterface
-{
+export class AddOwnershipEdgesParentIndex1735300000002 implements MigrationInterface {
   name = 'AddOwnershipEdgesParentIndex1735300000002';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

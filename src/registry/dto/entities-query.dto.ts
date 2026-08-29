@@ -1,18 +1,30 @@
-import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { ENTITY_STATUSES } from '../entities/entity.entity';
 import { COMPLIANCE_STATUSES } from './entities-response.dto';
 
 export const PAGE_SIZES = [10, 25, 50, 100] as const;
 
+/** No legitimate Entity Name search needs more than this; caps how much
+ * work the DB does per request (ILIKE pattern size, recursive subtree scan). */
+const MAX_SEARCH_LENGTH = 200;
+
 export class EntitiesQueryDto {
   @ApiPropertyOptional({
     description:
-      'Typo-tolerant match on Entity Name: case-insensitive substring matches always qualify, and close misspellings (small edit distance, scaled to query length) also qualify. Matches the top-level entity or any of its descendants (subsidiaries/FQs at any depth); a top-level row stays in the result set if any descendant matches, even if the top-level row itself does not. Results are ranked with the closest match first.',
+      'Case-insensitive substring match on Entity Name. Matches the top-level entity or any of its descendants (subsidiaries/FQs at any depth); a top-level row stays in the result set if any descendant matches, even if the top-level row itself does not.',
     example: 'northwind',
   })
   @IsOptional()
   @IsString()
+  @MaxLength(MAX_SEARCH_LENGTH)
   search?: string;
 
   @ApiPropertyOptional({

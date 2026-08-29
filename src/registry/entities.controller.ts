@@ -20,11 +20,13 @@ export class EntitiesController {
       'List top-level entities (paginated), each expandable to its FQs and subsidiaries.',
     description: `A "top-level" entity is one with no incoming ownership edge — nobody owns it.
 Each entity gets its own independently computed \`complianceStatus\` and \`nextDueDate\`,
-including its children. \`children\` nests recursively to arbitrary depth. Results are
-paginated by top-level entity (see \`page\`/\`pageSize\`); \`entityStatus\`, \`complianceStatus\`,
-and \`jurisdiction\` filters apply only to the top-level entity's own fields, while \`search\`
-is matched in the database against the entity name at every level (top-level or any
-descendant) — a top-level row survives if it or any descendant matches.`,
+including its children. \`children\` nests recursively to arbitrary depth. Filtering,
+search, and pagination all run in the database: \`entityStatus\` and \`jurisdiction\` filter
+top-level entities by their own column values; \`complianceStatus\` filters by the
+top-level entity's own computed status (not its children's); \`search\` is a
+case-insensitive substring match against the entity name at every level (top-level or any
+descendant) — a top-level row survives if it or any descendant matches. Results are
+paginated by top-level entity (see \`page\`/\`pageSize\`).`,
   })
   @ApiOkResponse({ type: EntitiesListResponseDto })
   list(@Query() query: EntitiesQueryDto) {
@@ -42,12 +44,11 @@ descendant) — a top-level row survives if it or any descendant matches.`,
 
   @Get('suggestions')
   @ApiOperation({
-    summary:
-      'Typo-tolerant Entity Name suggestions for a search-bar autocomplete.',
-    description: `Ranks every entity (top-level, subsidiary, or FQ) by the same fuzzy match used by
-\`search\` on \`GET /entities\` — exact substring hits first, then closest edit distance — and
-returns the top \`limit\`. Meant to back a suggestions dropdown: selecting one and re-searching
-by its exact \`entityName\` guarantees an exact match.`,
+    summary: 'Entity Name suggestions for a search-bar autocomplete.',
+    description: `Matches every entity (top-level, subsidiary, or FQ) by the same case-insensitive
+substring match used by \`search\` on \`GET /entities\`, ranked by where the query appears in
+the name, and returns the top \`limit\`. Meant to back a suggestions dropdown: selecting one
+and re-searching by its exact \`entityName\` guarantees an exact match.`,
   })
   @ApiOkResponse({ type: SuggestionsResponseDto })
   suggestions(@Query() query: SuggestionsQueryDto) {
