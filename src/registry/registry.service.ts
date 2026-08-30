@@ -139,6 +139,28 @@ export class RegistryService {
     @InjectRepository(Filing) private readonly filingRepo: Repository<Filing>,
   ) {}
 
+  /** getAnalytics's two full-table reads (entities, edges), cached across
+   * requests — this data only changes via processUpload, which clears the
+   * cache on a successful write, so a request-scoped fetch would be strictly
+   * redundant, not more correct. Filings are still queried fresh and scoped
+   * to the entities in play, since that table is the largest and grows
+   * fastest of the three. */
+  private analyticsBaseCache: {
+    entities: EntityRecord[];
+    edges: OwnershipEdge[];
+  } | null = null;
+
+  private async getAnalyticsBase() {
+    if (!this.analyticsBaseCache) {
+      const [entities, edges] = await Promise.all([
+        this.entityRepo.find(),
+        this.edgeRepo.find(),
+      ]);
+      this.analyticsBaseCache = { entities, edges };
+    }
+    return this.analyticsBaseCache;
+  }
+
   async processUpload(files: UploadFiles) {
     const { errors, entityRows, ownershipRows, filingRows } =
       await this.validationService.validateUpload(files);
@@ -151,7 +173,7 @@ export class RegistryService {
       'limits.uploadBatchChunkSize',
     )!;
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const entityRepo = manager.getRepository(EntityRecord);
       const edgeRepo = manager.getRepository(OwnershipEdge);
       const filingRepo = manager.getRepository(Filing);
@@ -277,6 +299,12 @@ export class RegistryService {
         filings: filingRows.length,
       };
     });
+
+    // Only reached once the transaction has committed — a rolled-back
+    // upload (thrown error) leaves the cache untouched.
+    this.analyticsBaseCache = null;
+
+    return result;
   }
 
   /** Top-level entities (own fields only) satisfying the top-level-only
@@ -553,10 +581,7 @@ export class RegistryService {
 
   async getAnalytics(query: AnalyticsQueryDto) {
     const today = new Date();
-    const [entities, edges] = await Promise.all([
-      this.entityRepo.find(),
-      this.edgeRepo.find(),
-    ]);
+    const { entities, edges } = await this.getAnalyticsBase();
 
     const entityById = new Map(entities.map((e) => [e.id, e]));
     let filteredEntities = entities;
