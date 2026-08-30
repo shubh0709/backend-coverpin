@@ -3,22 +3,27 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { RegistryModule } from './registry/registry.module';
 import { EntityRecord } from './registry/entities/entity.entity';
 import { OwnershipEdge } from './registry/entities/ownership-edge.entity';
 import { Filing } from './registry/entities/filing.entity';
+import { UploadJob } from './registry/entities/upload-job.entity';
 import limitsConfig from './config/limits.config';
 import databaseConfig from './config/database.config';
 import throttlerConfig from './config/throttler.config';
+import queueConfig from './config/queue.config';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [limitsConfig, databaseConfig, throttlerConfig],
+      load: [limitsConfig, databaseConfig, throttlerConfig, queueConfig],
     }),
+    // Backs UploadReconciliationService's stale-job sweep (@Interval).
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
@@ -30,7 +35,7 @@ import throttlerConfig from './config/throttler.config';
         return {
           type: 'postgres',
           url: databaseUrl,
-          entities: [EntityRecord, OwnershipEdge, Filing],
+          entities: [EntityRecord, OwnershipEdge, Filing, UploadJob],
           // Neon (and most managed Postgres) requires SSL; rejectUnauthorized:false
           // is standard for their pooled connection strings.
           ssl: isProd ? { rejectUnauthorized: false } : false,

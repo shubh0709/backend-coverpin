@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 import { EntityRecord } from '../registry/entities/entity.entity';
 import { OwnershipEdge } from '../registry/entities/ownership-edge.entity';
 import { Filing } from '../registry/entities/filing.entity';
+import { UploadJob } from '../registry/entities/upload-job.entity';
 
 /**
  * Used by the TypeORM CLI (migration:generate/run/revert), separate from the
@@ -11,7 +12,7 @@ import { Filing } from '../registry/entities/filing.entity';
 export const AppDataSource = new DataSource({
   type: 'postgres',
   url: process.env.DATABASE_URL,
-  entities: [EntityRecord, OwnershipEdge, Filing],
+  entities: [EntityRecord, OwnershipEdge, Filing, UploadJob],
   migrations: [__dirname + '/migrations/*.{ts,js}'],
   ssl:
     process.env.NODE_ENV === 'production'

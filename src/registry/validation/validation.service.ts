@@ -97,9 +97,16 @@ export class ValidationService {
       return sheet;
     };
 
-    const entitiesSheet = await parseSlot(files.entities, 'entities');
-    const ownershipSheet = await parseSlot(files.ownership, 'ownership');
-    const filingsSheet = await parseSlot(files.filings, 'filings');
+    // Independent parses (each runs in its own worker thread) — run them
+    // concurrently rather than awaiting one at a time so total parse time is
+    // bounded by the largest file, not the sum of all three. Order among
+    // structuralErrors doesn't matter: the final error list is sorted by
+    // FILE_ORDER/line/column below regardless of push order.
+    const [entitiesSheet, ownershipSheet, filingsSheet] = await Promise.all([
+      parseSlot(files.entities, 'entities'),
+      parseSlot(files.ownership, 'ownership'),
+      parseSlot(files.filings, 'filings'),
+    ]);
 
     const { errors: entityErrors, rows: entityRows } = entitiesSheet
       ? validateEntitiesSheet(entitiesSheet, today)

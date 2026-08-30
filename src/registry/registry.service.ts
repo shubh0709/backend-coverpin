@@ -150,6 +150,14 @@ export class RegistryService {
     edges: OwnershipEdge[];
   } | null = null;
 
+  /** Called after any out-of-band write to entities/ownership_edges (i.e.
+   * not through processUpload, which already clears this itself) — used by
+   * UploadAsyncController once a /upload/async job's write commits, whether
+   * via the QStash callback or the local-fallback worker thread. */
+  invalidateAnalyticsCache() {
+    this.analyticsBaseCache = null;
+  }
+
   private async getAnalyticsBase() {
     if (!this.analyticsBaseCache) {
       const [entities, edges] = await Promise.all([

@@ -7,7 +7,11 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody: true exposes req.rawBody (a Buffer) alongside the normal parsed
+  // req.body -- needed by UploadAsyncController's QStash callback route to
+  // verify the Upstash-Signature header against the exact bytes QStash
+  // signed (a re-stringified JSON body would produce a different signature).
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   // Full default CSP everywhere...
   app.use(helmet());
